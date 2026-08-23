@@ -54,6 +54,7 @@ export function generateDemoDataset(years = 1, seed = 42) {
     const priorWeekHigh = priorWeekAvgClose * (1 + Math.abs(normal(random)) * 0.025);
     const priorWeekLow = priorWeekAvgClose * (1 - Math.abs(normal(random)) * 0.025);
     const minutesRemaining = [5, 15, 60][Math.floor(random() * 3)];
+    const marketHorizon = minutesRemaining === 60 ? '1h' : `${minutesRemaining}m`;
     const secondsRemaining = Math.max(5, Math.floor(random() * minutesRemaining * 60));
     const round1000 = Math.round(btc / 1000) * 1000;
     const strike = round1000 + (Math.floor(random() * 5) - 2) * 100;
@@ -61,8 +62,8 @@ export function generateDemoDataset(years = 1, seed = 42) {
     rows.push({
       id: `demo-${years}-${i}`,
       timestamp: ts.toISOString(),
-      contractId: `BTC-${ts.toISOString().slice(0, 16)}-${minutesRemaining}m-${i}`,
-      marketHorizon: `${minutesRemaining}m`,
+      contractId: `BTC-${ts.toISOString().slice(0, 16)}-${marketHorizon}-${i}`,
+      marketHorizon,
       btcPrice: btc,
       btcReturnPct: ((btc / previousBtc) - 1) * 100,
       kalshiYes: kalshi,
