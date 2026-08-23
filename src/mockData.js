@@ -1,92 +1,181 @@
 function mulberry32(seed) {
+  let a = seed >>> 0;
   return function random() {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    a |= 0;
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
 
-function normal(random) {
-  let u = 0;
-  let v = 0;
-  while (u === 0) u = random();
-  while (v === 0) v = random();
+function gaussian(random) {
+  const u = Math.max(1e-9, random());
+  const v = Math.max(1e-9, random());
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-export function generateDemoDataset(years = 1, seed = 42) {
-  const random = mulberry32(seed + years * 101);
-  const now = new Date();
-  const start = new Date(now);
-  start.setUTCFullYear(start.getUTCFullYear() - years);
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const sigmoid = (x) => 1 / (1 + Math.exp(-x));
 
+function quoteFromMid(mid, random, venueBias = 0) {
+  const noisy = clamp(mid + venueBias + gaussian(random) * 0.012, 0.015, 0.985);
+  const spread = clamp(0.008 + random() * 0.024, 0.005, 0.05);
+  const bid = clamp(noisy - spread / 2, 0.005, 0.99);
+  const ask = clamp(noisy + spread / 2, 0.01, 0.995);
+  const last = clamp(noisy + gaussian(random) * spread * 0.45, bid, ask);
+  return { bid, ask, mid: (bid + ask) / 2, last };
+}
+
+function horizonSeconds(horizon) {
+  if (horizon === '5m') return 300;
+  if (horizon === '15m') return 900;
+  return 3600;
+}
+
+function nearest(value, step) {
+  return Math.round(value / step) * step;
+}
+
+export function generateDemoDataset(years = 3, seed = 42) {
+  const random = mulberry32(Number(seed) || 42);
+  const end = Date.now();
+  const days = Math.ceil(Number(years) * 365.25);
+  const start = end - days * 86400000;
   const rows = [];
-  const total = Math.max(1200, years * 2400);
-  let btc = 65000;
+  let btc = 26000 + random() * 12000;
+  let prevDayClose = btc;
+  let priorWeekCloses = Array(7).fill(btc);
+  let contractCounter = 0;
 
-  for (let i = 0; i < total; i += 1) {
-    const progress = i / Math.max(1, total - 1);
-    const ts = new Date(start.getTime() + progress * (now.getTime() - start.getTime()));
-    const regime = Math.sin(i / 190) * 0.35 + Math.sin(i / 47) * 0.12;
-    const btcReturn = 0.00015 + regime * 0.00025 + normal(random) * 0.0045;
-    const previousBtc = btc;
-    btc = Math.max(10000, btc * (1 + btcReturn));
+  for (let day = 0; day < days; day += 1) {
+    const dayStart = start + day * 86400000;
+    const macroDrift = 0.00035 + 0.0008 * Math.sin(day / 47) + gaussian(random) * 0.0012;
+    const dayOpen = btc;
+    const projectedClose = Math.max(8000, dayOpen * (1 + macroDrift + gaussian(random) * 0.018));
+    const yesterdayHigh = Math.max(dayOpen, prevDayClose) * (1 + 0.004 + random() * 0.018);
+    const yesterdayLow = Math.min(dayOpen, prevDayClose) * (1 - 0.004 - random() * 0.018);
+    const yesterdayClose = prevDayClose;
+    const priorWeekAvgClose = priorWeekCloses.reduce((a, b) => a + b, 0) / priorWeekCloses.length;
+    const priorWeekHigh = Math.max(...priorWeekCloses) * 1.012;
+    const priorWeekLow = Math.min(...priorWeekCloses) * 0.988;
+    const priorWeekClose = priorWeekCloses[priorWeekCloses.length - 1];
 
-    const latent = Math.max(0.04, Math.min(0.96, 0.5 + regime * 0.16 + normal(random) * 0.17));
-    const kalshiNoise = normal(random) * 0.035;
-    const polyNoise = normal(random) * 0.04;
-    const kalshi = Math.max(0.02, Math.min(0.98, latent + kalshiNoise));
-    const polymarket = Math.max(0.02, Math.min(0.98, latent + polyNoise));
-    const outcomeYes = random() < latent;
+    const contracts = [
+      ['5m', 2 * 3600], ['15m', 5 * 3600], ['1h', 8 * 3600],
+      ['5m', 13 * 3600], ['15m', 17 * 3600], ['1h', 21 * 3600],
+    ];
 
-    const previousKalshi = rows.length ? rows[rows.length - 1].kalshiYes : kalshi;
-    const previousPoly = rows.length ? rows[rows.length - 1].polyYes : polymarket;
-    const minuteOfDay = ts.getUTCHours() * 60 + ts.getUTCMinutes();
-    const sessionWave = Math.sin((minuteOfDay / 1440) * Math.PI * 2) * 0.0025;
-    const vwap = btc * (1 - sessionWave + normal(random) * 0.001);
-    const emaFast = btc * (1 - regime * 0.0015 + normal(random) * 0.0006);
-    const emaSlow = btc * (1 - regime * 0.003 + normal(random) * 0.0005);
-    const yesterdayClose = btc / (1 + normal(random) * 0.008);
-    const yesterdayHigh = yesterdayClose * (1 + Math.abs(normal(random)) * 0.012);
-    const yesterdayLow = yesterdayClose * (1 - Math.abs(normal(random)) * 0.012);
-    const priorWeekAvgClose = btc / (1 + normal(random) * 0.02);
-    const priorWeekHigh = priorWeekAvgClose * (1 + Math.abs(normal(random)) * 0.025);
-    const priorWeekLow = priorWeekAvgClose * (1 - Math.abs(normal(random)) * 0.025);
-    const minutesRemaining = [5, 15, 60][Math.floor(random() * 3)];
-    const marketHorizon = minutesRemaining === 60 ? '1h' : `${minutesRemaining}m`;
-    const secondsRemaining = Math.max(5, Math.floor(random() * minutesRemaining * 60));
-    const round1000 = Math.round(btc / 1000) * 1000;
-    const strike = round1000 + (Math.floor(random() * 5) - 2) * 100;
+    contracts.forEach(([marketHorizon, offsetSeconds], contractIndex) => {
+      const totalSeconds = horizonSeconds(marketHorizon);
+      const contractStart = dayStart + offsetSeconds * 1000;
+      const dayProgress = offsetSeconds / 86400;
+      const baseSpot = dayOpen + (projectedClose - dayOpen) * dayProgress + gaussian(random) * dayOpen * 0.004;
+      const strike = marketHorizon === '1h'
+        ? nearest(baseSpot + gaussian(random) * 140, 100)
+        : baseSpot + gaussian(random) * 18;
+      const contractVol = 0.42 + random() * 0.55;
+      const finalMoveScale = baseSpot * contractVol * Math.sqrt(totalSeconds / (365.25 * 86400));
+      const finalSpot = Math.max(1000, baseSpot + gaussian(random) * finalMoveScale + macroDrift * baseSpot * 0.08);
+      const finalKalshiRef = finalSpot + gaussian(random) * 7;
+      const finalPolyRef = finalSpot + gaussian(random) * 9;
+      const outcomeYes = ((finalKalshiRef + finalPolyRef) / 2) >= strike;
+      const expiryTs = contractStart + totalSeconds * 1000;
+      const contractId = `${marketHorizon}-${day}-${contractIndex}-${contractCounter++}`;
+      const snapshots = marketHorizon === '1h' ? 9 : 7;
+      let previousKalshiMid = 0.5;
+      let previousPolyMid = 0.5;
+      let previousSpot = baseSpot;
 
-    rows.push({
-      id: `demo-${years}-${i}`,
-      timestamp: ts.toISOString(),
-      contractId: `BTC-${ts.toISOString().slice(0, 16)}-${marketHorizon}-${i}`,
-      marketHorizon,
-      btcPrice: btc,
-      btcReturnPct: ((btc / previousBtc) - 1) * 100,
-      kalshiYes: kalshi,
-      polyYes: polymarket,
-      kalshiDelta: kalshi - previousKalshi,
-      polyDelta: polymarket - previousPoly,
-      kalshiBookImbalance: Math.max(-1, Math.min(1, regime * 0.5 + normal(random) * 0.35)),
-      polyBookImbalance: Math.max(-1, Math.min(1, regime * 0.45 + normal(random) * 0.38)),
-      secondsRemaining,
-      strike,
-      outcomeYes,
-      vwap,
-      emaFast,
-      emaSlow,
-      yesterdayHigh,
-      yesterdayLow,
-      yesterdayClose,
-      priorWeekAvgClose,
-      priorWeekHigh,
-      priorWeekLow,
-      realizedVolPct: Math.max(10, 55 + Math.abs(regime) * 45 + normal(random) * 14),
+      for (let snap = 0; snap < snapshots; snap += 1) {
+        const progress = snap / (snapshots - 1);
+        // Do not include the exact settlement timestamp; last observable row is shortly before expiry.
+        const effectiveProgress = Math.min(progress * 0.985, 0.985);
+        const timestamp = contractStart + totalSeconds * effectiveProgress * 1000;
+        const secondsRemaining = Math.max(1, Math.round((expiryTs - timestamp) / 1000));
+        const bridge = baseSpot + (finalSpot - baseSpot) * effectiveProgress;
+        const noiseScale = finalMoveScale * Math.sqrt(Math.max(0.02, (1 - effectiveProgress))) * 0.45;
+        const compositePrice = Math.max(1000, bridge + gaussian(random) * noiseScale);
+        const binancePrice = compositePrice + gaussian(random) * 6;
+        const coinbasePrice = compositePrice + gaussian(random) * 7;
+        // These are synthetic stand-ins only. Real mode must use exact reference-source archives.
+        const kalshiReferencePrice = compositePrice * 0.72 + previousSpot * 0.28 + gaussian(random) * 4;
+        const polyReferencePrice = compositePrice + gaussian(random) * 5;
+        const uncertainty = Math.max(8, finalMoveScale * Math.sqrt(Math.max(secondsRemaining, 1) / totalSeconds));
+        const fairProb = sigmoid((compositePrice - strike) / uncertainty * 1.55);
+        // Build a mild synthetic lead/lag effect so the B-style workflow is demonstrable, not evidentiary.
+        const latentFutureDirection = Math.sign(finalSpot - compositePrice);
+        const kalshiMidLatent = clamp(fairProb + latentFutureDirection * 0.018 * (1 - effectiveProgress) + gaussian(random) * 0.018, 0.02, 0.98);
+        const polyMidLatent = clamp(fairProb + latentFutureDirection * 0.008 * (1 - effectiveProgress) + gaussian(random) * 0.02, 0.02, 0.98);
+        const k = quoteFromMid(kalshiMidLatent, random, 0);
+        const p = quoteFromMid(polyMidLatent, random, gaussian(random) * 0.006);
+        const elapsed = snap === 0 ? Math.max(1, totalSeconds / snapshots) : Math.max(1, totalSeconds * effectiveProgress / snap);
+        const kalshiDelta = snap === 0 ? 0 : k.mid - previousKalshiMid;
+        const polyDelta = snap === 0 ? 0 : p.mid - previousPolyMid;
+        const btcMoveDollars = compositePrice - previousSpot;
+        const btcReturnPct = previousSpot ? (compositePrice / previousSpot - 1) * 100 : 0;
+        const expectedProbMoveFromBtc = btcMoveDollars / Math.max(500, uncertainty * 7);
+        const kalshiResidual = kalshiDelta - expectedProbMoveFromBtc;
+        const polyResidual = polyDelta - expectedProbMoveFromBtc;
+        const vwapAnchor = dayOpen + (projectedClose - dayOpen) * Math.min(1, (offsetSeconds + totalSeconds * effectiveProgress) / 86400) * 0.65;
+        const vwap = vwapAnchor + gaussian(random) * baseSpot * 0.0015;
+        const emaSlow = compositePrice * (1 - macroDrift * 2) + gaussian(random) * 24;
+        const emaFast = compositePrice * (1 + Math.sign(btcReturnPct) * 0.00035) + gaussian(random) * 14;
+
+        rows.push({
+          timestamp: new Date(timestamp).toISOString(),
+          expiryTs,
+          contractId,
+          marketHorizon,
+          strike,
+          outcomeYes,
+          btcPrice: compositePrice,
+          compositePrice,
+          binancePrice,
+          coinbasePrice,
+          kalshiReferencePrice,
+          polyReferencePrice,
+          vwap,
+          emaFast,
+          emaSlow,
+          yesterdayHigh,
+          yesterdayLow,
+          yesterdayClose,
+          priorWeekAvgClose,
+          priorWeekHigh,
+          priorWeekLow,
+          priorWeekClose,
+          btcReturnPct,
+          btcMoveDollars,
+          realizedVolPct: contractVol * 100,
+          kalshiYesBid: k.bid,
+          kalshiYesAsk: k.ask,
+          kalshiYesMid: k.mid,
+          kalshiYesLast: k.last,
+          polyYesBid: p.bid,
+          polyYesAsk: p.ask,
+          polyYesMid: p.mid,
+          polyYesLast: p.last,
+          kalshiDelta,
+          polyDelta,
+          kalshiVelocity: kalshiDelta / elapsed,
+          polyVelocity: polyDelta / elapsed,
+          kalshiResidual,
+          polyResidual,
+          kalshiBookImbalance: clamp((fairProb - 0.5) * 1.2 + gaussian(random) * 0.3, -1, 1),
+          polyBookImbalance: clamp((fairProb - 0.5) + gaussian(random) * 0.34, -1, 1),
+        });
+
+        previousKalshiMid = k.mid;
+        previousPolyMid = p.mid;
+        previousSpot = compositePrice;
+      }
     });
+
+    btc = projectedClose;
+    prevDayClose = projectedClose;
+    priorWeekCloses = [...priorWeekCloses.slice(1), projectedClose];
   }
 
-  return rows;
+  return rows.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 }
