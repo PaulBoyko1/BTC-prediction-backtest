@@ -1,0 +1,85 @@
+BTC PREDICTION BACKTEST — QUESTIONS / DECISIONS NEEDED
+=====================================================
+
+These do NOT block the v0.1 foundation. They are the decisions needed before real historical ingestion and serious strategy validation.
+
+1. PREDICTION MARKET SCOPE
+- Do you want Kalshi and Polymarket both enabled from the first real-data version, or prioritize Kalshi first?
+- For Polymarket, should we support both Polymarket global and Polymarket US if economically equivalent BTC markets exist?
+- Which contract families matter first: 5-minute, 15-minute, 1-hour threshold markets, daily markets, or all of them?
+- When a strategy says "price hits .45", should entry mean the first executable ASK <= .45, midpoint <= .45, last trade <= .45, or a configurable choice? Recommendation: executable ask by default.
+- Should a contract be allowed only one entry, or can the same contract trigger multiple independent entries? Current default: one entry per contract.
+
+2. SIDE / PAYOFF INTERPRETATION
+- Should every prediction-market rule explicitly choose YES or NO, or should the app infer direction from the signal?
+- For BTC-technical rules, what should the resulting trade be by default: buy YES on an UP market, buy NO on an UP market, choose market dynamically, or compare both sides and take higher expected value?
+- Should the engine allow "skip trade unless all-in price <= X" as a global rule in addition to factor-level price rules?
+
+3. PORTFOLIO SIZING
+- What should the default safety cap be for research portfolios: 2%, 5%, or 10% maximum capital per contract? Current default: 5%.
+- What should the default total simultaneous exposure cap be? Current default: 20%.
+- For Kelly mode, is quarter Kelly the preferred default? Current default: 0.25x.
+- Should Kelly probability come from: (A) rolling empirical win rate, (B) a separate predictive model probability, (C) calibrated probability buckets, or all three as selectable modes? Recommendation: all three eventually.
+- Do you want Monte Carlo / bootstrap confidence bands around portfolio outcomes and probability of drawdown/ruin? Recommendation: yes.
+
+4. FEES / EXECUTION
+- Should maker-fill simulation be included in v1 or start with taker/ask execution only?
+- Should each venue have its exact historical fee schedule by date? Recommendation: yes, because fee regimes change.
+- How conservative should slippage assumptions be for low-liquidity contracts? Fixed cents, % of spread, depth-based fill simulation, or selectable modes? Recommendation: selectable.
+- Do you want partial fills reconstructed from order-book depth when historical L2 data is available? Recommendation: yes for serious high-frequency tests.
+
+5. DATA FREQUENCY / LEAD-LAG TESTS
+- What is the finest timestamp resolution you want to target: 1 second, 100 ms, or raw exchange event timestamps?
+- For the Kalshi-leads-BTC hypothesis, which future horizons should be standard outputs? Suggested: 250 ms, 500 ms, 1s, 2s, 5s, 10s, 30s, 1m, 3m, 5m, to contract expiry.
+- Which BTC reference venue should be primary: Binance, Coinbase, composite, or all? Recommendation: Binance + Coinbase + optional composite.
+- Do you want BTC perp data (funding, basis, liquidations, open interest, order-book imbalance) in addition to spot?
+
+6. BTC TECHNICAL FACTORS
+- Preferred definition of daily session for yesterday high/low/close: UTC day, New York trading day, or configurable? Recommendation: configurable, UTC default for crypto.
+- Preferred VWAP definitions: UTC-day, rolling 1h/4h/24h, anchored at prediction-market contract open, or all?
+- EMA defaults/timeframes beyond 9/21: 20/50, 50/200, etc.?
+- Add RSI, MACD, Bollinger Bands, ATR, stochastic, ADX, volume profile, anchored VWAP, support/resistance pivots, Fibonacci, market profile? Which are priorities?
+- For "last week average close/high/low", should week mean Monday-Sunday UTC or rolling 7 days?
+- Do you want round-level factors at $100 / $500 / $1,000 / $5,000 / $10,000 with automatic nearest-level selection? Current UI has the first four.
+
+7. PREDICTION-MARKET-SPECIFIC FACTORS
+- Add probability velocity + acceleration as separate factors?
+- Add aggressive buyer/seller flow, trade-size percentile, whale flow and book replenishment/cancellation rates?
+- Add a residual signal: prediction-market move MINUS the move expected from contemporaneous BTC price/volatility?
+- Add cross-market confirmation: Kalshi moves first, Polymarket confirms within N seconds (and vice versa)?
+- Add settlement-model probability vs market-price spread (e.g. TWAP/threshold model)?
+- For hourly target markets, exactly how should "closest to xxx00" behave: nearest $100 strike, nearest listed strike to current BTC, or user-selectable rounding?
+
+8. STATISTICS / DIAGNOSTICS
+- Besides win rate, edge, EV, drawdown, CAGR and Sharpe, should the default report include:
+  Brier score, log loss, calibration chart, confidence interval on win rate, binomial p-value, bootstrap CI, profit factor, expectancy, Sortino, Calmar, streaks, VaR/CVaR, turnover?
+- For "Black-Scholes and complex stuff", do you specifically want:
+  digital-option probability N(d2), implied volatility, option-implied terminal distribution, call-spread implied binary probability, Greeks, or all of these when options data exists?
+- Should the app compare prediction-market probability with Deribit/Binance options-implied probability when matching expiries/strikes can be constructed?
+
+9. OVERFITTING / VALIDATION
+- Preferred train/test split: fixed 70/30, walk-forward, expanding-window, or selectable? Recommendation: walk-forward selectable.
+- Should there be a "parameter sweep" mode that automatically tests ranges (e.g. .40, .41 ... .60) and penalizes multiple testing?
+- Do you want automatic out-of-sample lockbox mode so a final period cannot be inspected until parameters are frozen?
+- Should strategy results be grouped by bull/bear/sideways regime, volatility regime, day of week, hour, and liquidity regime?
+
+10. UI / SAVING
+- Should strategy configurations save in browser LocalStorage first, or eventually to a backend/database/account?
+- Do you want named strategy presets and duplicate/compare buttons?
+- Should multiple strategies be overlaid on one equity chart and compared side-by-side?
+- Export formats: CSV trade ledger, JSON strategy definition, PNG chart, PDF report?
+- Do you want a dark-only interface (current design) or light mode too?
+
+11. DATA / API CREDENTIALS
+- When ready, will you provide Kalshi API credentials for authenticated endpoints if needed?
+- Polymarket public market data can be integrated without trading credentials; do you want read-only public data only for now?
+- Binance/Coinbase market-data adapters can start public/read-only. Do you want both?
+- If historical APIs do not expose enough depth/history for free, are you okay importing open datasets / downloaded historical archives into the project? You already indicated API connection can come later, so the app is designed for this.
+
+12. INITIAL REAL BACKTEST PRIORITY
+Please rank the first 3 tests you want real data for. My suggested starting set:
+A. 15m contract first touches YES <= 0.45 -> buy YES -> hold to expiry.
+B. Kalshi 15m probability shock >= X over Y seconds while BTC moved <= Z -> buy direction -> hold to expiry / measure BTC forward returns.
+C. Kalshi-vs-Polymarket equivalent-contract spread >= X -> test convergence and each venue's settlement outcome.
+D. 1h strike within $100 of nearest $100 level AND NO <= 0.20 -> buy NO -> expiry.
+E. BTC technical combinations (VWAP + EMA + prior-day level) -> map to prediction-market entry.
