@@ -62,6 +62,7 @@ export const branchCatalog = {
         label: 'Strike / threshold vs BTC',
         description: 'For hourly threshold markets: compare target strike with current BTC and round-number levels.',
         fields: [
+          { key: 'marketHorizon', label: 'Market horizon', type: 'select', options: ['1h', '15m', '5m'], default: '1h' },
           { key: 'reference', label: 'Reference', type: 'select', options: ['Current BTC', 'Nearest $100', 'Nearest $500', 'Nearest $1,000'], default: 'Current BTC' },
           { key: 'operator', label: 'Strike offset', type: 'select', options: ['<=', '>=', 'abs<=', 'abs>='], default: 'abs<=' },
           { key: 'dollars', label: 'Distance ($)', type: 'number', min: 0, max: 10000, step: 10, default: 100 },
