@@ -18,10 +18,11 @@ function nearestRound(price, label) {
 }
 
 function valueForVenue(row, venue, side = 'YES') {
-  let yes;
-  if (venue === 'Polymarket') yes = row.polyYes;
-  else if (venue === 'Either') yes = Math.min(row.kalshiYes, row.polyYes);
-  else yes = row.kalshiYes;
+  if (venue === 'Either') {
+    if (side === 'YES') return Math.min(row.kalshiYes, row.polyYes);
+    return Math.min(1 - row.kalshiYes, 1 - row.polyYes);
+  }
+  const yes = venue === 'Polymarket' ? row.polyYes : row.kalshiYes;
   return side === 'NO' ? 1 - yes : yes;
 }
 
@@ -49,6 +50,7 @@ function factorMatches(factor, row, previousRow) {
     case 'time_to_expiry':
       return compare(row.secondsRemaining, v.operator, Number(v.seconds));
     case 'strike_offset': {
+      if (v.marketHorizon && row.marketHorizon !== v.marketHorizon) return false;
       let reference = row.btcPrice;
       if (v.reference !== 'Current BTC') reference = nearestRound(row.btcPrice, v.reference);
       const offset = row.strike - reference;
@@ -157,58 +159,87 @@ function standardDeviation(values) {
 }
 
 export function runBacktest({ rows, factors, joinMode = 'AND', risk }) {
+  const startingCapital = Number(risk.startingCapital || 10000);
   const trades = [];
-  const equity = [{ timestamp: rows[0]?.timestamp || new Date().toISOString(), equity: Number(risk.startingCapital || 10000) }];
+  const equity = [{ timestamp: rows[0]?.timestamp || new Date().toISOString(), equity: startingCapital }];
   const pastOutcomes = [];
   const seenContracts = new Set();
-  let cash = Number(risk.startingCapital || 10000);
+  const openPositions = [];
+  let cash = startingCapital;
   let lastEntryTime = -Infinity;
   const side = inferEntrySide(factors);
 
+  const openCost = () => openPositions.reduce((sum, position) => sum + position.allocation, 0);
+  const accountEquityAtCost = () => cash + openCost();
+
+  function settleThrough(timestampMs) {
+    openPositions.sort((a, b) => a.expiryTs - b.expiryTs);
+    let i = 0;
+    while (i < openPositions.length) {
+      const position = openPositions[i];
+      if (position.expiryTs > timestampMs) { i += 1; continue; }
+      openPositions.splice(i, 1);
+      const settlement = position.won ? position.shares : 0;
+      cash += settlement;
+      const pnl = settlement - position.allocation;
+      const after = accountEquityAtCost();
+      trades.push({ ...position, pnl, after });
+      pastOutcomes.push(position.won);
+      equity.push({ timestamp: new Date(position.expiryTs).toISOString(), equity: after });
+    }
+  }
+
   rows.forEach((row, index) => {
+    const ts = new Date(row.timestamp).getTime();
+    settleThrough(ts);
+
     const previousRow = index > 0 ? rows[index - 1] : null;
     const matches = factors.map((factor) => factorMatches(factor, row, previousRow));
     const signal = joinMode === 'OR' ? matches.some(Boolean) : matches.every(Boolean);
     if (!signal || factors.length === 0) return;
     if (risk.oneEntryPerContract && seenContracts.has(row.contractId)) return;
 
-    const ts = new Date(row.timestamp).getTime();
     const cooldownMs = Number(risk.cooldownMinutes || 0) * 60000;
     if (ts - lastEntryTime < cooldownMs) return;
 
     const entryPrice = getEntryPrice(row, factors, side, risk);
     let sizingFraction = getSizingFraction({ risk, entryPrice, pastOutcomes });
-    sizingFraction = Math.min(sizingFraction, Number(risk.maxTradePct || 100) / 100, Number(risk.maxExposurePct || 100) / 100);
+    sizingFraction = Math.min(sizingFraction, Number(risk.maxTradePct || 100) / 100);
     if (sizingFraction <= 0) return;
 
-    const allocation = Math.min(cash * sizingFraction, cash);
+    const equityBefore = accountEquityAtCost();
+    const maxExposureDollars = equityBefore * (Number(risk.maxExposurePct || 100) / 100);
+    const exposureCapacity = Math.max(0, maxExposureDollars - openCost());
+    const desiredAllocation = equityBefore * sizingFraction;
+    const allocation = Math.min(desiredAllocation, exposureCapacity, cash);
+    if (allocation <= 0) return;
+
     const shares = allocation / entryPrice;
     const won = side === 'YES' ? row.outcomeYes : !row.outcomeYes;
-    const settlement = won ? shares : 0;
-    const pnl = settlement - allocation;
-    const before = cash;
-    cash += pnl;
+    cash -= allocation;
 
-    trades.push({
+    openPositions.push({
       timestamp: row.timestamp,
+      expiryTs: ts + Math.max(1, Number(row.secondsRemaining || 1)) * 1000,
       contractId: row.contractId,
       side,
       entryPrice,
       allocation,
       shares,
       won,
-      pnl,
-      before,
-      after: cash,
+      before: equityBefore,
       btcPrice: row.btcPrice,
       kalshiYes: row.kalshiYes,
       polyYes: row.polyYes,
     });
-    pastOutcomes.push(won);
-    equity.push({ timestamp: row.timestamp, equity: cash });
+
     seenContracts.add(row.contractId);
     lastEntryTime = ts;
   });
+
+  settleThrough(Infinity);
+  trades.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  equity.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
   const wins = trades.filter((trade) => trade.won).length;
   const losses = trades.length - wins;
@@ -220,11 +251,12 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk }) {
   const meanReturn = returns.length ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
   const sdReturn = standardDeviation(returns);
   const pseudoSharpe = sdReturn ? (meanReturn / sdReturn) * Math.sqrt(Math.max(1, trades.length)) : 0;
-  const totalReturn = Number(risk.startingCapital || 10000) ? cash / Number(risk.startingCapital || 10000) - 1 : 0;
+  const endingCapital = cash;
+  const totalReturn = startingCapital ? endingCapital / startingCapital - 1 : 0;
   const startTs = rows.length ? new Date(rows[0].timestamp).getTime() : Date.now();
   const endTs = rows.length ? new Date(rows[rows.length - 1].timestamp).getTime() : Date.now();
   const years = Math.max((endTs - startTs) / (365.25 * 86400000), 1 / 365.25);
-  const cagr = cash > 0 ? (cash / Number(risk.startingCapital || 10000)) ** (1 / years) - 1 : -1;
+  const cagr = endingCapital > 0 ? (endingCapital / startingCapital) ** (1 / years) - 1 : -1;
 
   return {
     trades,
@@ -237,7 +269,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk }) {
       avgEntry,
       breakevenWinRate,
       empiricalEdge,
-      endingCapital: cash,
+      endingCapital,
       totalReturn,
       cagr,
       maxDrawdown: maxDrawdown(equity),
