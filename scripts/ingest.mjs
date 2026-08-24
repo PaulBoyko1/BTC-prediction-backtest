@@ -48,6 +48,10 @@ function safeName(value) {
   return String(value || 'data').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 160);
 }
 
+function warnTruncated(source, maxPages) {
+  console.error(`WARNING: ${source} reached --pages ${maxPages} before the requested range was proven complete. The saved metadata marks this download truncated. Increase --pages or ingest smaller date chunks.`);
+}
+
 async function writeRaw(source, label, payload, metadata = {}) {
   const dir = path.resolve(option('out', 'data/raw'), source);
   await fs.mkdir(dir, { recursive: true });
@@ -73,15 +77,21 @@ function tradeIdentity(trade) {
 async function pageKalshiTrades(fetchPage, { ticker, minTs, maxTs, maxPages, label }) {
   let cursor;
   const trades = [];
+  let complete = false;
   for (let page = 0; page < maxPages; page += 1) {
     const response = await fetchPage({ ticker, minTs, maxTs, limit: 1000, cursor });
     const batch = response.trades || response.data || [];
     trades.push(...batch);
     cursor = response.cursor;
     console.error(`Kalshi ${label} page ${page + 1}: +${batch.length} trades`);
-    if (!cursor || batch.length === 0) break;
+    if (!cursor || batch.length === 0) {
+      complete = true;
+      break;
+    }
   }
-  return trades;
+  const truncated = !complete && Boolean(cursor);
+  if (truncated) warnTruncated(`Kalshi ${label} trades`, maxPages);
+  return { trades, truncated };
 }
 
 async function ingestKalshiTrades() {
@@ -98,24 +108,29 @@ async function ingestKalshiTrades() {
 
   const trades = [];
   const queried = [];
+  let truncated = false;
   const historicalEnd = maxTs === undefined ? cutoffTs - 1 : Math.min(maxTs, cutoffTs - 1);
   const needsHistorical = (minTs === undefined || minTs < cutoffTs) && historicalEnd >= (minTs ?? 0);
   if (needsHistorical) {
-    trades.push(...await pageKalshiTrades(
+    const result = await pageKalshiTrades(
       (params) => kalshiApi.historicalTrades(params),
       { ticker, minTs, maxTs: historicalEnd, maxPages, label: 'historical' },
-    ));
-    queried.push({ tier: 'historical', minTs, maxTs: historicalEnd });
+    );
+    trades.push(...result.trades);
+    truncated ||= result.truncated;
+    queried.push({ tier: 'historical', minTs, maxTs: historicalEnd, truncated: result.truncated });
   }
 
   const liveStart = minTs === undefined ? cutoffTs : Math.max(minTs, cutoffTs);
   const needsLive = maxTs === undefined || maxTs >= cutoffTs;
   if (needsLive) {
-    trades.push(...await pageKalshiTrades(
+    const result = await pageKalshiTrades(
       (params) => kalshiApi.trades(params),
       { ticker, minTs: liveStart, maxTs, maxPages, label: 'live' },
-    ));
-    queried.push({ tier: 'live', minTs: liveStart, maxTs });
+    );
+    trades.push(...result.trades);
+    truncated ||= result.truncated;
+    queried.push({ tier: 'live', minTs: liveStart, maxTs, truncated: result.truncated });
   }
 
   const unique = [...new Map(trades.map((trade) => [tradeIdentity(trade), trade])).values()]
@@ -128,6 +143,7 @@ async function ingestKalshiTrades() {
     queried,
     rawCount: trades.length,
     dedupedCount: unique.length,
+    truncated,
   });
 }
 
@@ -143,7 +159,7 @@ async function ingestKalshiMarket() {
     response = await kalshiApi.historicalMarket(ticker);
     tier = 'historical';
   }
-  await writeRaw('kalshi', `${ticker}-market`, response, { ticker, tier });
+  await writeRaw('kalshi', `${ticker}-market`, response, { ticker, tier, truncated: false });
 }
 
 async function ingestKalshiCandles() {
@@ -169,7 +185,7 @@ async function ingestKalshiCandles() {
   if (startTs !== undefined && endTs !== undefined && startTs > endTs) throw new Error('--start must be before --end');
   const periodInterval = numberOption('period', 1);
   const response = await kalshiApi.candlesticks({ seriesTicker, ticker, startTs, endTs, periodInterval, historical });
-  await writeRaw('kalshi', `${ticker}-candles-${periodInterval}m`, response, { seriesTicker, ticker, startTs, endTs, periodInterval, historical });
+  await writeRaw('kalshi', `${ticker}-candles-${periodInterval}m`, response, { seriesTicker, ticker, startTs, endTs, periodInterval, historical, truncated: false });
 }
 
 async function ingestPolymarketHistory() {
@@ -181,7 +197,7 @@ async function ingestPolymarketHistory() {
   const interval = option('interval', 'all');
   const fidelity = numberOption('fidelity', 1);
   const response = await polymarketApi.priceHistory({ tokenId, startTs, endTs, interval, fidelity });
-  await writeRaw('polymarket', `${tokenId}-price-history`, response, { tokenId, startTs, endTs, interval, fidelity });
+  await writeRaw('polymarket', `${tokenId}-price-history`, response, { tokenId, startTs, endTs, interval, fidelity, truncated: false });
 }
 
 async function ingestPolymarketTrades() {
@@ -194,7 +210,9 @@ async function ingestPolymarketTrades() {
   const maxPages = Math.max(1, numberOption('pages', 100));
   let offset = 0;
   const trades = [];
+  let complete = false;
   let truncatedAtOffsetLimit = false;
+  let truncatedAtPageLimit = false;
   for (let page = 0; page < maxPages; page += 1) {
     if (offset > 10000) {
       truncatedAtOffsetLimit = true;
@@ -204,7 +222,10 @@ async function ingestPolymarketTrades() {
     const list = Array.isArray(batch) ? batch : batch.data || batch.trades || [];
     trades.push(...list);
     console.error(`Polymarket page ${page + 1}: +${list.length} trades`);
-    if (list.length < limit) break;
+    if (list.length < limit) {
+      complete = true;
+      break;
+    }
     const nextOffset = offset + list.length;
     if (nextOffset > 10000) {
       truncatedAtOffsetLimit = true;
@@ -212,10 +233,13 @@ async function ingestPolymarketTrades() {
     }
     offset = nextOffset;
   }
+  if (!complete && !truncatedAtOffsetLimit && maxPages > 0) truncatedAtPageLimit = true;
   if (truncatedAtOffsetLimit) {
     console.error('WARNING: Polymarket Data API offset is capped at 10000. Narrow --start/--end and ingest in time chunks for a complete result.');
   }
-  await writeRaw('polymarket', `${conditionId}-trades`, trades, { conditionId, start, end, truncatedAtOffsetLimit });
+  if (truncatedAtPageLimit) warnTruncated('Polymarket trades', maxPages);
+  const truncated = truncatedAtOffsetLimit || truncatedAtPageLimit;
+  await writeRaw('polymarket', `${conditionId}-trades`, trades, { conditionId, start, end, truncated, truncatedAtOffsetLimit, truncatedAtPageLimit });
 }
 
 const intervalMsMap = {
@@ -241,18 +265,27 @@ async function ingestBinanceKlines() {
   const intervalMs = intervalMsMap[interval];
   if (!intervalMs) throw new Error(`Unsupported interval for pager: ${interval}`);
   const rows = [];
+  let complete = false;
   for (let page = 0; page < maxPages && cursor <= endTime; page += 1) {
     const batch = await binanceApi.klines({ interval, startTime: cursor, endTime, limit });
-    if (!Array.isArray(batch) || batch.length === 0) break;
+    if (!Array.isArray(batch) || batch.length === 0) {
+      complete = true;
+      break;
+    }
     rows.push(...batch);
     const lastOpen = Number(batch[batch.length - 1][0]);
     const next = lastOpen + intervalMs;
     if (next <= cursor) throw new Error('Binance kline pager did not advance');
     cursor = next;
     console.error(`Binance page ${page + 1}: +${batch.length} klines`);
-    if (batch.length < limit) break;
+    if (batch.length < limit || cursor > endTime) {
+      complete = true;
+      break;
+    }
   }
-  await writeRaw('binance', `BTCUSDT-${interval}-klines`, rows, { interval, start: option('start'), end: option('end') });
+  const truncated = !complete && cursor <= endTime;
+  if (truncated) warnTruncated('Binance klines', maxPages);
+  await writeRaw('binance', `BTCUSDT-${interval}-klines`, rows, { interval, start: option('start'), end: option('end'), truncated });
 }
 
 async function ingestBinanceAggTrades() {
@@ -263,13 +296,17 @@ async function ingestBinanceAggTrades() {
   const maxPages = Math.max(1, numberOption('pages', 5000));
   let fromId;
   let first = true;
+  let complete = false;
   const trades = [];
   for (let page = 0; page < maxPages; page += 1) {
     const batch = await binanceApi.aggTrades(first
       ? { startTime, endTime, limit: 1000 }
       : { fromId, endTime, limit: 1000 });
     first = false;
-    if (!Array.isArray(batch) || batch.length === 0) break;
+    if (!Array.isArray(batch) || batch.length === 0) {
+      complete = true;
+      break;
+    }
     const filtered = batch.filter((trade) => Number(trade.T) >= startTime && Number(trade.T) <= endTime);
     trades.push(...filtered);
     const last = batch[batch.length - 1];
@@ -277,9 +314,14 @@ async function ingestBinanceAggTrades() {
     if (!Number.isFinite(nextFromId) || nextFromId <= Number(fromId ?? -1)) throw new Error('Binance aggregate-trade pager did not advance');
     fromId = nextFromId;
     console.error(`Binance page ${page + 1}: +${filtered.length} aggTrades`);
-    if (batch.length < 1000 || Number(last.T) >= endTime) break;
+    if (batch.length < 1000 || Number(last.T) >= endTime) {
+      complete = true;
+      break;
+    }
   }
-  await writeRaw('binance', 'BTCUSDT-aggTrades', trades, { start: option('start'), end: option('end') });
+  const truncated = !complete;
+  if (truncated) warnTruncated('Binance aggregate trades', maxPages);
+  await writeRaw('binance', 'BTCUSDT-aggTrades', trades, { start: option('start'), end: option('end'), truncated });
 }
 
 async function ingestCoinbaseCandles() {
@@ -306,12 +348,14 @@ async function ingestCoinbaseCandles() {
     cursor = windowEnd + granularity * 1000;
     console.error(`Coinbase page ${page + 1}: +${batch.length} candles`);
   }
+  const truncated = cursor < endMs;
+  if (truncated) warnTruncated('Coinbase candles', maxPages);
   const unique = [...new Map(rows.map((row) => [row[0], row])).values()].sort((a, b) => a[0] - b[0]);
-  await writeRaw('coinbase', `BTC-USD-${granularity}s-candles`, unique, { granularity, start: option('start'), end: option('end') });
+  await writeRaw('coinbase', `BTC-USD-${granularity}s-candles`, unique, { granularity, start: option('start'), end: option('end'), truncated });
 }
 
 function help() {
-  console.log(`BTC Prediction Backtest — public read-only ingestion\n\nCommands:\n  connections\n  kalshi-market --ticker TICKER\n  kalshi-trades --ticker TICKER [--start ISO|unix] [--end ISO|unix]\n  kalshi-candles --ticker TICKER [--series SERIES] [--historical auto|true|false] [--start ...] [--end ...] [--period 1]\n  poly-history --token TOKEN_ID [--start ...] [--end ...] [--interval all] [--fidelity 1]\n  poly-trades --condition CONDITION_ID [--start ...] [--end ...]\n  binance-klines --start ISO --end ISO [--interval 1m]\n  binance-aggtrades --start ISO --end ISO\n  coinbase-candles --start ISO --end ISO [--granularity 60]\n\nCommon:\n  --out data/raw\n  --pages N\n\nKalshi trade ingestion automatically combines historical/live tiers around the current cutoff.\nPolymarket trade pagination stops at the documented offset cap; use narrower date chunks if warned.\nThe script only performs market-data GET requests and writes raw JSON. It does not place orders.`);
+  console.log(`BTC Prediction Backtest — public read-only ingestion\n\nCommands:\n  connections\n  kalshi-market --ticker TICKER\n  kalshi-trades --ticker TICKER [--start ISO|unix] [--end ISO|unix]\n  kalshi-candles --ticker TICKER [--series SERIES] [--historical auto|true|false] [--start ...] [--end ...] [--period 1]\n  poly-history --token TOKEN_ID [--start ...] [--end ...] [--interval all] [--fidelity 1]\n  poly-trades --condition CONDITION_ID [--start ...] [--end ...]\n  binance-klines --start ISO --end ISO [--interval 1m]\n  binance-aggtrades --start ISO --end ISO\n  coinbase-candles --start ISO --end ISO [--granularity 60]\n\nCommon:\n  --out data/raw\n  --pages N\n\nKalshi trade ingestion automatically combines historical/live tiers around the current cutoff.\nEvery paginated download records a truncation flag; if the page cap is reached, increase --pages or ingest smaller date chunks.\nPolymarket trade pagination also stops at the documented offset cap and requires narrower date chunks when that happens.\nThe script only performs market-data GET requests and writes raw JSON. It does not place orders.`);
 }
 
 try {
