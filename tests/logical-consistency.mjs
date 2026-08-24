@@ -227,4 +227,65 @@ const expensive = runBacktest({
 assert.ok(expensive.trades[0].entryPrice > 1, 'all-in cost above $1 should remain above $1');
 assert.ok(expensive.trades[0].pnl < 0, 'a winning binary contract can still lose money when all-in unit cost exceeds $1');
 
-console.log('Logical-consistency cases passed: NO books, source integrity, BTC crossings, cooldowns, marking, calibration, outcomes and all-in cost.');
+// Mean-reversion / defined-price-cycle idea: buy at or below 45c and sell only
+// once an executable bid reaches 55c. The realized early-exit profit is logically
+// independent of whether the contract would eventually settle YES.
+const meanReversionRows = [
+  baseRow({
+    timestamp: '2026-01-01T00:00:00.000Z', contractId: 'mean-revert', kalshiOutcomeYes: false,
+    kalshiYesBid: 0.44, kalshiYesAsk: 0.45, kalshiYesMid: 0.445,
+  }),
+  baseRow({
+    timestamp: '2026-01-01T00:00:10.000Z', contractId: 'mean-revert', secondsRemaining: 890, kalshiOutcomeYes: false,
+    kalshiYesBid: 0.56, kalshiYesAsk: 0.57, kalshiYesMid: 0.565,
+  }),
+];
+const buyLowFactor = {
+  instanceId: 'buy-low', type: 'pm_price',
+  values: { venue: 'Kalshi', side: 'YES', operator: '<=', value: 0.45, marketHorizon: '15m' },
+};
+const meanReversion = runBacktest({
+  rows: meanReversionRows,
+  factors: [buyLowFactor],
+  joinMode: 'AND',
+  risk: baseRisk,
+  execution: {
+    ...defaultExecutionSettings,
+    tradeVenue: 'Kalshi', marketHorizon: '15m', exitMode: 'target', exitTarget: 0.55,
+  },
+  dataSettings: baseData,
+  fillMode: 'ask',
+});
+assert.equal(meanReversion.metrics.trades, 1, '45c -> 55c mean-reversion cycle should produce one trade');
+assert.equal(meanReversion.trades[0].exitReason, 'target');
+assert.equal(meanReversion.trades[0].settlementWon, false, 'fixture intentionally loses at final settlement');
+assert.ok(meanReversion.trades[0].pnl > 0, 'profitable early exit must remain profitable even when final settlement would lose');
+
+// Volatility-harvesting idea: repeat the same low->high cycle inside one contract.
+// After a target exit, a later return to <=45c can open a new position; final
+// binary direction is not the payoff driver for those completed cycles.
+const harvestRows = [
+  baseRow({ timestamp: '2026-01-01T00:00:00.000Z', contractId: 'harvest', kalshiOutcomeYes: false, kalshiYesBid: 0.43, kalshiYesAsk: 0.45, kalshiYesMid: 0.44 }),
+  baseRow({ timestamp: '2026-01-01T00:00:10.000Z', contractId: 'harvest', secondsRemaining: 890, kalshiOutcomeYes: false, kalshiYesBid: 0.56, kalshiYesAsk: 0.58, kalshiYesMid: 0.57 }),
+  baseRow({ timestamp: '2026-01-01T00:00:20.000Z', contractId: 'harvest', secondsRemaining: 880, kalshiOutcomeYes: false, kalshiYesBid: 0.42, kalshiYesAsk: 0.44, kalshiYesMid: 0.43 }),
+  baseRow({ timestamp: '2026-01-01T00:00:30.000Z', contractId: 'harvest', secondsRemaining: 870, kalshiOutcomeYes: false, kalshiYesBid: 0.55, kalshiYesAsk: 0.57, kalshiYesMid: 0.56 }),
+];
+const harvested = runBacktest({
+  rows: harvestRows,
+  factors: [buyLowFactor],
+  joinMode: 'AND',
+  risk: baseRisk,
+  execution: {
+    ...defaultExecutionSettings,
+    tradeVenue: 'Kalshi', marketHorizon: '15m', exitMode: 'target', exitTarget: 0.55,
+    reentryMode: 'repeat', entryCooldownSeconds: 0,
+  },
+  dataSettings: baseData,
+  fillMode: 'ask',
+});
+assert.equal(harvested.metrics.trades, 2, 'repeat low->high harvesting should support two cycles in one contract');
+assert.ok(harvested.trades.every((trade) => trade.exitReason === 'target'));
+assert.ok(harvested.trades.every((trade) => trade.pnl > 0));
+assert.ok(harvested.trades.every((trade) => trade.settlementWon === false));
+
+console.log('Logical-consistency cases passed: NO books, source integrity, BTC crossings, cooldowns, marking, calibration, outcomes, all-in cost, mean reversion and volatility harvesting.');
