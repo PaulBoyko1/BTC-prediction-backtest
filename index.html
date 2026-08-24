@@ -1,23 +1,19 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="BTC prediction-market strategy composer and backtesting workbench" />
-  <title>BTC Prediction Backtest</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="BTC prediction-market backtest UI candidate wired to the real JavaScript engine">
+  <title>BTC Lab — Functional UI Candidate</title>
+  <link rel="stylesheet" href="./styles.css">
   <style>
-    .reference-lab-link { position: fixed; right: 24px; bottom: 20px; z-index: 10; color: #07100f; background: #71e3ad; border: 1px solid rgba(113,227,173,.5); border-radius: 999px; padding: 9px 12px; font: 700 10px Inter, system-ui, sans-serif; text-decoration: none; box-shadow: 0 10px 32px rgba(0,0,0,.32); }
-    .reference-lab-link:hover { transform: translateY(-1px); }
+    .reference-audit-link { position: fixed; right: 18px; bottom: 16px; z-index: 30; background: #66e0b5; color: #06110e; border-radius: 999px; padding: 8px 11px; font: 700 9px Inter, system-ui, sans-serif; text-decoration: none; box-shadow: 0 8px 28px rgba(0,0,0,.3); }
   </style>
 </head>
 <body>
   <div id="app"></div>
-  <a class="reference-lab-link" href="./reference.html">Settlement Reference Lab ↗</a>
+  <a class="reference-audit-link" href="./reference.html">Settlement Reference Lab ↗</a>
+  <script type="module" src="./src/auditPreload.js"></script>
   <script type="module" src="./src/app.js"></script>
-  <script type="module" src="./src/uiGuardrails.js"></script>
 </body>
 </html>
