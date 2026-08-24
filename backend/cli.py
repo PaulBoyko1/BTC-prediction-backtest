@@ -102,6 +102,7 @@ def command_twap_proxy(args: argparse.Namespace) -> int:
         target_timestamp_col=args.target_timestamp_col,
         source_label=args.source_label,
         max_start_staleness_ms=args.max_start_staleness_ms,
+        max_observation_gap_ms=args.max_observation_gap_ms,
     )
     result = build_twap_proxy(btc, targets, config)
     output = Path(args.output)
@@ -217,6 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-start-staleness-ms",
         type=int,
         help="Optional maximum age of the carried-forward price at the window start.",
+    )
+    twap.add_argument(
+        "--max-observation-gap-ms",
+        type=int,
+        help="Optional maximum gap between observations inside a proxy window.",
     )
     twap.set_defaults(func=command_twap_proxy)
 
