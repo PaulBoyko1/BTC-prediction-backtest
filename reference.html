@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>Settlement Reference Lab — BTC Prediction Backtest</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    body { min-width: 980px; }
+    .reference-shell { max-width: 1320px; margin: 0 auto; padding: 28px 30px 60px; }
+    .reference-nav { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }
+    .reference-nav a { color:#71e3ad; text-decoration:none; font-size:11px; border:1px solid rgba(113,227,173,.24); border-radius:9px; padding:8px 11px; }
+    .reference-title h1 { margin:5px 0 7px; font-size:28px; }
+    .reference-title p { color:#8ba39a; font-size:12px; max-width:850px; line-height:1.6; }
+    .reference-controls { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }
+    .availability-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .availability { padding:16px; border:1px solid rgba(213,255,239,.12); border-radius:12px; background:#0d1817; }
+    .availability h3 { margin:5px 0; font-size:15px; }
+    .availability p, .availability small { color:#8ba39a; font-size:10px; line-height:1.5; }
+    .availability .blocked { color:#f2bf6d; display:inline-block; margin-top:9px; font-size:9px; font-weight:800; }
+    .reference-warning { border:1px solid rgba(242,191,109,.3); background:rgba(242,191,109,.06); border-radius:10px; padding:12px; color:#cdb68f; font-size:10px; line-height:1.55; }
+    .reference-chart-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .reference-chart-card { padding:12px; border:1px solid rgba(213,255,239,.12); border-radius:11px; background:#0d1817; }
+    .reference-chart-card strong, .reference-chart-card span { display:block; }
+    .reference-chart-card span { color:#8ba39a; font-size:9px; margin-top:3px; }
+    .reference-chart-card canvas { margin-top:10px; }
+    .withheld { padding:35px; text-align:center; border:1px dashed rgba(213,255,239,.2); border-radius:12px; background:rgba(255,255,255,.015); }
+    .withheld strong { display:block; font-size:15px; }
+    .withheld p { color:#8ba39a; font-size:11px; line-height:1.55; max-width:680px; margin:8px auto 0; }
+    .reference-table td, .reference-table th { text-align:right; }
+    .reference-table td:first-child, .reference-table th:first-child { text-align:left; }
+  </style>
+</head>
+<body>
+  <main id="reference-app" class="reference-shell"></main>
+  <script type="module" src="./src/referenceLab.js"></script>
+</body>
+</html>
