@@ -1,0 +1,116 @@
+"""Command-line entry points for the heavy historical research backend."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import polars as pl
+
+from .config import FORWARD_HORIZONS_MS
+from .lead_lag import LeadLagConfig, build_lead_lag_events, summarize_lead_lag
+
+
+def _parse_horizons(text: str) -> tuple[int, ...]:
+    values = tuple(int(part.strip()) for part in text.split(",") if part.strip())
+    if not values:
+        raise argparse.ArgumentTypeError("at least one horizon is required")
+    if any(value <= 0 for value in values):
+        raise argparse.ArgumentTypeError("horizons must be positive milliseconds")
+    return values
+
+
+def _read_parquet(path: str | Path) -> pl.DataFrame:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return pl.read_parquet(path)
+
+
+def command_lead_lag(args: argparse.Namespace) -> int:
+    prediction = _read_parquet(args.prediction)
+    btc = _read_parquet(args.btc)
+
+    config = LeadLagConfig(
+        lookback_ms=args.lookback_ms,
+        shock_points=args.shock_points,
+        max_btc_move_usd=args.max_btc_move_usd,
+        direction=args.direction,
+        horizons_ms=args.horizons_ms,
+        probability_col=args.probability_col,
+        timestamp_col=args.timestamp_col,
+        contract_col=args.contract_col,
+        btc_price_col=args.btc_price_col,
+        expiry_col=args.expiry_col,
+    )
+
+    events = build_lead_lag_events(prediction, btc, config)
+    summary = summarize_lead_lag(events, config.horizons_ms)
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    events.write_parquet(output, compression="zstd")
+
+    summary_output = (
+        Path(args.summary_output)
+        if args.summary_output
+        else output.with_name(f"{output.stem}_summary.parquet")
+    )
+    summary_output.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_parquet(summary_output, compression="zstd")
+
+    print(f"signals: {events.height:,}")
+    print(f"events:  {output}")
+    print(f"summary: {summary_output}")
+    if summary.height:
+        print(summary)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="btc-research",
+        description="High-frequency BTC prediction-market research backend",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    lead_lag = subparsers.add_parser(
+        "lead-lag",
+        help="Test prediction-market shocks conditioned on muted BTC movement",
+    )
+    lead_lag.add_argument("--prediction", required=True, help="Normalized prediction Parquet")
+    lead_lag.add_argument("--btc", required=True, help="Normalized BTC Parquet")
+    lead_lag.add_argument("--output", required=True, help="Output event Parquet")
+    lead_lag.add_argument("--summary-output", help="Optional summary Parquet path")
+    lead_lag.add_argument("--lookback-ms", type=int, default=5_000)
+    lead_lag.add_argument("--shock-points", type=float, default=0.08)
+    lead_lag.add_argument("--max-btc-move-usd", type=float, default=20.0)
+    lead_lag.add_argument(
+        "--direction",
+        choices=("up", "down", "either"),
+        default="either",
+    )
+    lead_lag.add_argument(
+        "--horizons-ms",
+        type=_parse_horizons,
+        default=FORWARD_HORIZONS_MS,
+        help="Comma-separated milliseconds, e.g. 100,250,500,1000,5000",
+    )
+    lead_lag.add_argument("--probability-col", default="yes_mid")
+    lead_lag.add_argument("--timestamp-col", default="timestamp_ns")
+    lead_lag.add_argument("--contract-col", default="contract_id")
+    lead_lag.add_argument("--btc-price-col", default="price")
+    lead_lag.add_argument("--expiry-col", default="expiry_ns")
+    lead_lag.set_defaults(func=command_lead_lag)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
