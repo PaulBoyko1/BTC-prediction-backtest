@@ -1,0 +1,6 @@
+data/raw/
+data/cache/
+data/normalized/
+*.parquet
+*.duckdb
+.DS_Store
