@@ -1,21 +1,24 @@
 export const factorCatalog = [
   {
-    group: 'Prediction market',
-    id: 'pm_price',
-    label: 'Contract price',
+    group: 'Prediction market', id: 'pm_price', label: 'Contract price',
     description: 'Require an executable or observed YES/NO price to reach a chosen level.',
     fields: [
       { key: 'venue', label: 'Signal venue', type: 'select', options: ['Trade target venue', 'Kalshi', 'Polymarket', 'Either'], default: 'Trade target venue' },
-      { key: 'side', label: 'Observed side', type: 'select', options: ['Trade target side', 'YES', 'NO'], default: 'Trade target side' },
-      { key: 'operator', label: 'Condition', type: 'select', options: ['<=', '>=', 'crosses_up', 'crosses_down'], default: '<=' },
-      { key: 'value', label: 'Price / contract', type: 'number', min: 0.01, max: 0.99, step: 0.01, default: 0.45 },
+      { key: 'side', label: 'Price applies to', type: 'select', options: [{ value: 'Trade target side', label: 'Execute side / AUTO candidate' }, { value: 'YES', label: 'YES / UP only' }, { value: 'NO', label: 'NO / DOWN only' }], default: 'Trade target side' },
+      { key: 'operator', label: 'Price rule', type: 'select', options: [
+        { value: 'within', label: 'Near target price ± tolerance' },
+        { value: '<=', label: 'At or below target price' },
+        { value: '>=', label: 'At or above target price' },
+        { value: 'crosses_up', label: 'Crosses up through target' },
+        { value: 'crosses_down', label: 'Crosses down through target' },
+      ], default: 'within' },
+      { key: 'value', label: 'Entry price target / contract', type: 'number', min: 0.01, max: 0.99, step: 0.01, default: 0.45 },
+      { key: 'tolerance', label: 'Price tolerance', type: 'number', min: 0, max: 0.25, step: 0.005, default: 0.01 },
       { key: 'marketHorizon', label: 'Market horizon', type: 'select', options: ['Trade target', '5m', '15m', '1h'], default: 'Trade target' },
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'pm_delta',
-    label: 'Prediction price shock',
+    group: 'Prediction market', id: 'pm_delta', label: 'Prediction price shock',
     description: 'Detect a rapid probability move over a chosen lookback; useful for Kalshi-leading-BTC tests.',
     fields: [
       { key: 'venue', label: 'Venue', type: 'select', options: ['Kalshi', 'Polymarket'], default: 'Kalshi' },
@@ -25,9 +28,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'pm_velocity',
-    label: 'Probability velocity',
+    group: 'Prediction market', id: 'pm_velocity', label: 'Probability velocity',
     description: 'Rate of prediction-price change per second. Designed for extreme repricing studies.',
     fields: [
       { key: 'venue', label: 'Venue', type: 'select', options: ['Kalshi', 'Polymarket'], default: 'Kalshi' },
@@ -36,9 +37,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'pm_book_imbalance',
-    label: 'Order-book imbalance',
+    group: 'Prediction market', id: 'pm_book_imbalance', label: 'Order-book imbalance',
     description: 'Compare bid and ask depth before entering.',
     fields: [
       { key: 'venue', label: 'Venue', type: 'select', options: ['Kalshi', 'Polymarket'], default: 'Kalshi' },
@@ -48,9 +47,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'cross_market_spread',
-    label: 'Kalshi ↔ Polymarket spread',
+    group: 'Prediction market', id: 'cross_market_spread', label: 'Kalshi ↔ Polymarket spread',
     description: 'Require equivalent contracts to disagree by a chosen amount.',
     fields: [
       { key: 'operator', label: 'Kalshi − Poly', type: 'select', options: ['>=', '<=', 'abs>=', 'abs<='], default: 'abs>=' },
@@ -59,9 +56,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'time_to_expiry',
-    label: 'Time to expiry',
+    group: 'Prediction market', id: 'time_to_expiry', label: 'Time to expiry',
     description: 'Only enter within or outside a specified time-to-settlement window.',
     fields: [
       { key: 'operator', label: 'Remaining', type: 'select', options: ['<=', '>='], default: '<=' },
@@ -69,9 +64,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'strike_offset',
-    label: 'Strike / threshold geometry',
+    group: 'Prediction market', id: 'strike_offset', label: 'Strike / threshold geometry',
     description: 'Compare contract threshold with BTC or a round-number level, optionally requiring a cheap side.',
     fields: [
       { key: 'marketHorizon', label: 'Market horizon', type: 'select', options: ['Trade target', '1h', '15m', '5m'], default: '1h' },
@@ -83,9 +76,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Prediction market',
-    id: 'pm_residual',
-    label: 'Prediction move unexplained by BTC',
+    group: 'Prediction market', id: 'pm_residual', label: 'Prediction move unexplained by BTC',
     description: 'Require prediction probability to move more than contemporaneous BTC would normally imply.',
     fields: [
       { key: 'venue', label: 'Venue', type: 'select', options: ['Kalshi', 'Polymarket'], default: 'Kalshi' },
@@ -94,9 +85,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'vwap_setup',
-    label: 'VWAP setup',
+    group: 'BTC', id: 'vwap_setup', label: 'VWAP setup',
     description: 'Named VWAP behavior with sensible defaults; advanced distance/tolerance remains configurable.',
     fields: [
       { key: 'setup', label: 'Setup', type: 'select', options: ['Bullish bias', 'Bearish bias', 'Reversal up', 'Reversal down', 'Continuation up', 'Continuation down', 'Support hold', 'Resistance hold', 'Breakthrough up', 'Breakthrough down'], default: 'Bullish bias' },
@@ -106,9 +95,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'ema_cross',
-    label: 'EMA relationship / cross',
+    group: 'BTC', id: 'ema_cross', label: 'EMA relationship / cross',
     description: 'Fast/slow EMA structure or crossover.',
     fields: [
       { key: 'fast', label: 'Fast EMA', type: 'number', min: 2, max: 500, step: 1, default: 9 },
@@ -118,9 +105,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'prior_day_level',
-    label: 'Yesterday level',
+    group: 'BTC', id: 'prior_day_level', label: 'Yesterday level',
     description: 'Test price relative to yesterday high, low, or close.',
     fields: [
       { key: 'level', label: 'Level', type: 'select', options: ['High', 'Low', 'Close'], default: 'High' },
@@ -129,9 +114,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'prior_week_level',
-    label: 'Prior-week statistic',
+    group: 'BTC', id: 'prior_week_level', label: 'Prior-week statistic',
     description: 'Compare BTC with prior-week average or extremes.',
     fields: [
       { key: 'level', label: 'Statistic', type: 'select', options: ['Average close', 'High', 'Low', 'Close'], default: 'Average close' },
@@ -140,9 +123,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'return_momentum',
-    label: 'Momentum / return',
+    group: 'BTC', id: 'return_momentum', label: 'Momentum / return',
     description: 'Require a BTC return over a configurable lookback.',
     fields: [
       { key: 'lookbackMinutes', label: 'Lookback (minutes)', type: 'number', min: 1, max: 1440, step: 1, default: 15 },
@@ -151,9 +132,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'realized_vol',
-    label: 'Realized volatility regime',
+    group: 'BTC', id: 'realized_vol', label: 'Realized volatility regime',
     description: 'Filter signals by recent realized volatility.',
     fields: [
       { key: 'lookbackMinutes', label: 'Lookback (minutes)', type: 'number', min: 5, max: 10080, step: 5, default: 60 },
@@ -162,9 +141,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'round_level',
-    label: 'Round-number proximity',
+    group: 'BTC', id: 'round_level', label: 'Round-number proximity',
     description: 'Test behavior near xx000 / xxx00 BTC levels.',
     fields: [
       { key: 'rounding', label: 'Round to', type: 'select', options: ['$100', '$500', '$1,000', '$5,000'], default: '$1,000' },
@@ -172,9 +149,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'BTC',
-    id: 'btc_move_gate',
-    label: 'BTC move gate',
+    group: 'BTC', id: 'btc_move_gate', label: 'BTC move gate',
     description: 'Require BTC to have moved little or substantially while another signal fires.',
     fields: [
       { key: 'lookbackSeconds', label: 'Lookback (seconds)', type: 'number', min: 1, max: 900, step: 1, default: 5 },
@@ -183,9 +158,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Reference price',
-    id: 'reference_distance',
-    label: 'Settlement reference vs strike',
+    group: 'Reference price', id: 'reference_distance', label: 'Settlement reference vs strike',
     description: 'Use the venue settlement reference rather than exchange spot when the data is available.',
     fields: [
       { key: 'reference', label: 'Reference model', type: 'select', options: ['Auto by trade venue', 'Kalshi CF BRTI 60s average', 'Polymarket Chainlink Data Stream'], default: 'Auto by trade venue' },
@@ -194,9 +167,7 @@ export const factorCatalog = [
     ],
   },
   {
-    group: 'Reference price',
-    id: 'reference_vs_spot',
-    label: 'Settlement reference vs BTC spot',
+    group: 'Reference price', id: 'reference_vs_spot', label: 'Settlement reference vs BTC spot',
     description: 'Measure lag/divergence between the contract settlement reference and selected exchange/composite spot.',
     fields: [
       { key: 'reference', label: 'Reference model', type: 'select', options: ['Auto by trade venue', 'Kalshi CF BRTI 60s average', 'Polymarket Chainlink Data Stream'], default: 'Auto by trade venue' },
@@ -207,58 +178,27 @@ export const factorCatalog = [
 ];
 
 export const branchCatalog = {
-  prediction: {
-    id: 'prediction',
-    label: 'Start from Prediction Markets',
-    description: 'Start with contract price / flow, then freely add BTC and reference-price confirmations.',
-    defaultFactor: 'pm_price',
-  },
-  btc: {
-    id: 'btc',
-    label: 'Start from BTC',
-    description: 'Start with a BTC technical setup, then freely add prediction-market and settlement-reference confirmations.',
-    defaultFactor: 'vwap_setup',
-  },
+  prediction: { id: 'prediction', label: 'Start from Prediction Markets', description: 'Start with contract price / flow, then freely add BTC and reference-price confirmations.', defaultFactor: 'pm_price' },
+  btc: { id: 'btc', label: 'Start from BTC', description: 'Start with a BTC technical setup, then freely add prediction-market and settlement-reference confirmations.', defaultFactor: 'vwap_setup' },
 };
 
 export const defaultExecutionSettings = {
-  tradeVenue: 'Kalshi',
-  tradeSide: 'YES',
-  marketHorizon: '15m',
-  entryObservation: 'ask',
-  exitMode: 'expiry',
-  exitTarget: 0.55,
-  stopPrice: 0.35,
-  exitSecondsRemaining: 30,
-  reentryMode: 'once',
-  maxEntriesPerContract: 1,
-  entryCooldownSeconds: 0,
+  tradeVenue: 'Kalshi', tradeSide: 'YES', marketHorizon: '15m', entryObservation: 'ask',
+  exitMode: 'expiry', exitTarget: 0.55, stopPrice: 0.35, exitSecondsRemaining: 30,
+  reentryMode: 'once', maxEntriesPerContract: 1, entryCooldownSeconds: 0,
 };
 
 export const defaultRiskSettings = {
-  startingCapital: 10000,
-  sizingMode: 'fixed_pct',
-  fixedTradePct: 2,
-  kellyFraction: 0.25,
-  kellyLookback: 100,
-  kellyPriorWins: 10,
-  kellyPriorLosses: 10,
-  maxTradePct: 5,
-  maxExposurePct: 20,
-  minEdgePct: 0,
-  slippageCents: 0.2,
-  entryFeeCents: 0,
-  exitFeeCents: 0,
+  startingCapital: 10000, sizingMode: 'fixed_pct', fixedContracts: 100, fixedTradeDollars: 100, fixedTradePct: 2,
+  kellyFraction: 0.25, kellyLookback: 100, kellyPriorWins: 10, kellyPriorLosses: 10,
+  maxTradePct: 5, maxExposurePct: 20, minEdgePct: 0,
+  slippageCents: 0.2, entryFeeCents: 0, exitFeeCents: 0,
 };
 
 export const defaultDataSettings = {
-  mode: 'demo',
-  btcSource: 'Composite (Binance + Coinbase)',
-  predictionSource: 'Both',
-  timestampResolution: 'Raw timestamps',
-  referenceMode: 'Venue rule',
-  largeFillSensitivityPts: 3,
-  largeReturnSensitivityPct: 10,
+  mode: 'demo', btcSource: 'Composite (Binance + Coinbase)', predictionSource: 'Both',
+  timestampResolution: 'Raw timestamps', referenceMode: 'Venue rule',
+  largeFillSensitivityPts: 3, largeReturnSensitivityPct: 10,
 };
 
 export const advancedMetricHelp = {
@@ -277,6 +217,4 @@ export const advancedMetricHelp = {
   digital: 'Digital-option N(d2) risk-neutral probability reference from spot/strike/time/volatility; not a true forecast by itself.',
 };
 
-export function getFactorTemplate(id) {
-  return factorCatalog.find((factor) => factor.id === id) || factorCatalog[0];
-}
+export function getFactorTemplate(id) { return factorCatalog.find((factor) => factor.id === id) || factorCatalog[0]; }

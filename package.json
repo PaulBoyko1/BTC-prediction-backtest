@@ -1,11 +1,11 @@
 {
   "name": "btc-prediction-backtest",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/app.js && node --check src/uiGuardrails.js && node --check src/backtest.js && node --check src/catalog.js && node --check src/mockData.js && node --check src/dataAdapters.js && node --check src/referenceLab.js && node --check scripts/ingest.mjs && node --check scripts/chainlink-reference.mjs && node --check tests/smoke.mjs && node --check tests/factor-lookbacks.mjs && node --check tests/logical-consistency.mjs",
-    "test": "node tests/smoke.mjs && node tests/factor-lookbacks.mjs && node tests/logical-consistency.mjs",
+    "check": "node --check src/app.js && node --check src/uiGuardrails.js && node --check src/backtest.js && node --check src/fees.js && node --check src/catalog.js && node --check src/mockData.js && node --check src/dataAdapters.js && node --check src/referenceLab.js && node --check scripts/ingest.mjs && node --check scripts/chainlink-reference.mjs && node --check tests/smoke.mjs && node --check tests/factor-lookbacks.mjs && node --check tests/logical-consistency.mjs && node --check tests/adversarial.mjs && node --check tests/auto-side-and-demo-calibration.mjs && node --check tests/fee-engine.mjs",
+    "test": "node tests/smoke.mjs && node tests/factor-lookbacks.mjs && node tests/logical-consistency.mjs && node tests/adversarial.mjs && node tests/auto-side-and-demo-calibration.mjs && node tests/fee-engine.mjs",
     "ingest": "node scripts/ingest.mjs",
     "chainlink:reference": "node scripts/chainlink-reference.mjs"
   },
