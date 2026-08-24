@@ -1,0 +1,28 @@
+name: Validate BTC Lab
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: |
+          node --check src/app.js
+          node --check src/backtest.js
+          node --check src/catalog.js
+          node --check src/mockData.js
+          node --check src/dataAdapters.js
+      - name: Check required files
+        run: |
+          test -f index.html
+          test -f styles.css
+          test -f README.md
+          test -f QUESTIONS.txt
