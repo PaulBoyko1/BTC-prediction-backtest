@@ -24,3 +24,5 @@ jobs:
           test -f README.md
           test -f QUESTIONS.txt
           test -f API_NOTES.md
+          test -f DATA_SCHEMA.md
+          test -f scripts/ingest.mjs
