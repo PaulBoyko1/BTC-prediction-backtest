@@ -1,6 +1,6 @@
 # Full Code Bug Audit — v0.4
 
-Audit performed 2026-08-23/24 against the full repository: browser strategy engine, portfolio accounting, synthetic data, API adapters/ingestion, reference lab, Python/Polars lead-lag backend, tests, and CI.
+Audit performed 2026-08-23/24 against the full repository: browser strategy engine, portfolio accounting, synthetic data, API adapters/ingestion, reference lab, Python/Polars lead-lag backend, credentialed reference clients, tests, and CI.
 
 ## Correctness bugs fixed
 
@@ -34,6 +34,11 @@ Audit performed 2026-08-23/24 against the full repository: browser strategy engi
 - **Timestamp validation:** invalid dates and reversed start/end windows now fail clearly.
 - **Polymarket offset cap:** the Data API trade pager now stops at its documented offset limit and warns that the user must ingest narrower time chunks instead of issuing invalid requests.
 - **Binance aggregate-trade pagination:** pager progress is validated and output is explicitly clipped to the requested time range.
+
+### Credentialed reference acquisition
+
+- **CME OAuth expiry:** the DataMine client cached an OAuth bearer token indefinitely even though CME documents finite token lifetime. The client now tracks token expiry with an early-refresh margin and retries one authenticated GET after a 401 using a fresh token.
+- CME download `chunk_size` is validated instead of allowing invalid zero/negative values.
 
 ### Settlement Reference Lab
 
@@ -72,7 +77,9 @@ Python tests now explicitly cover:
 - forward-label delay rejection;
 - backward-feature staleness rejection;
 - valid-label sample counts;
-- invalid-probability filtering.
+- invalid-probability filtering;
+- CME OAuth token reuse while valid;
+- CME authenticated retry with a freshly issued token after a 401.
 
 ## Known feature-engine limitations — not presented as validated edge logic
 
@@ -90,6 +97,6 @@ These are intentionally classified as **remaining feature-engine work**, not val
 
 ## Audit conclusion
 
-The corrected codebase is materially safer for research: it now fails closed on missing execution/reference/outcome data, preserves venue-specific settlement behavior, exposes timestamp quality in the high-frequency backend, and has regression tests for the bugs found during the audit.
+The corrected codebase is materially safer for research: it now fails closed on missing execution/reference/outcome data, preserves venue-specific settlement behavior, exposes timestamp quality in the high-frequency backend, refreshes expiring reference-data credentials safely, and has regression tests for the bugs found during the audit.
 
 This audit validates software behavior, **not historical profitability or the existence of a trading edge**. Real-edge claims still require normalized historical data, correct per-contract rules, historical fee/fill modeling, parameter stability, and walk-forward/out-of-sample validation.
