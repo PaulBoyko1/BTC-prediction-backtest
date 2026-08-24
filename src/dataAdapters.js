@@ -135,7 +135,7 @@ export function websocketEndpoints() {
     polymarket: 'wss://ws-subscriptions-clob.polymarket.com/ws/market',
     binance: 'wss://stream.binance.com:9443/ws/btcusdt@aggTrade',
     coinbase: 'wss://advanced-trade-ws.coinbase.com',
-    kalshi: 'wss://api.elections.kalshi.com/trade-api/ws/v2',
+    kalshi: 'wss://external-api-ws.kalshi.com/trade-api/ws/v2',
   };
 }
 
