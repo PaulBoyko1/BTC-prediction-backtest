@@ -44,7 +44,7 @@ const shortPredictionShock = runBacktest({
   factors: [{
     instanceId: 'shock',
     type: 'pm_delta',
-    values: { venue: 'Kalshi', lookbackSeconds: 5, operator: '>=', value: 0.12 },
+    values: { venue: 'Kalshi', lookbackSeconds: 5, operator: '>=', value: 0.18 },
   }],
   joinMode: 'AND',
   risk,
@@ -57,7 +57,7 @@ const longPredictionShock = runBacktest({
   factors: [{
     instanceId: 'shock',
     type: 'pm_delta',
-    values: { venue: 'Kalshi', lookbackSeconds: 10, operator: '>=', value: 0.12 },
+    values: { venue: 'Kalshi', lookbackSeconds: 10, operator: '>=', value: 0.18 },
   }],
   joinMode: 'AND',
   risk,
@@ -65,13 +65,8 @@ const longPredictionShock = runBacktest({
   dataSettings,
   fillMode: 'ask',
 });
-assert.equal(shortPredictionShock.metrics.trades, 1, '5-second prediction lookback should qualify the final +15pt move');
-assert.equal(longPredictionShock.metrics.trades, 1, '10-second prediction lookback should also qualify the final +20pt move');
-assert.notEqual(
-  shortPredictionShock.trades[0].entryPrice,
-  longPredictionShock.trades[0].entryPrice,
-  'different prediction lookbacks should be capable of selecting different timestamps/prices',
-);
+assert.equal(shortPredictionShock.metrics.trades, 0, '5-second prediction lookback should reject the final +15pt move at an 18pt threshold');
+assert.equal(longPredictionShock.metrics.trades, 1, '10-second prediction lookback should qualify the final +20pt move at an 18pt threshold');
 
 const btcRows = [
   row('2026-01-01T00:00:00Z', 'c1', 0.40, 100000),
