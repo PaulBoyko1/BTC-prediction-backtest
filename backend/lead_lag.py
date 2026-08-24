@@ -6,9 +6,11 @@ The core Test-B hypothesis is:
     while BTC itself moved no more than Z dollars over the same lookback
     -> measure BTC forward returns from 100 ms through 5 minutes / expiry.
 
-All joins are *as-of* joins.  Historical features use backward-only joins and
+All joins are *as-of* joins. Historical features use backward-only joins and
 forward labels use forward-only joins, which makes the lookahead boundary
-explicit and auditable.
+explicit and auditable. The engine also records how stale each joined feature
+or forward label actually is so sparse data cannot masquerade as sub-second
+precision.
 """
 
 from __future__ import annotations
@@ -41,6 +43,8 @@ class LeadLagConfig:
     contract_col: str = "contract_id"
     btc_price_col: str = "price"
     expiry_col: str = "expiry_ns"
+    max_feature_staleness_ms: int | None = None
+    max_forward_delay_ms: int | None = None
 
 
 def _require_columns(frame: pl.DataFrame, columns: Iterable[str], label: str) -> None:
@@ -60,6 +64,10 @@ def _validate_config(config: LeadLagConfig) -> None:
         raise ValueError("direction must be up, down, or either")
     if any(h <= 0 for h in config.horizons_ms):
         raise ValueError("all forward horizons must be > 0")
+    if config.max_feature_staleness_ms is not None and config.max_feature_staleness_ms < 0:
+        raise ValueError("max_feature_staleness_ms must be >= 0 or None")
+    if config.max_forward_delay_ms is not None and config.max_forward_delay_ms < 0:
+        raise ValueError("max_forward_delay_ms must be >= 0 or None")
 
 
 def _prediction_lag_features(
@@ -70,7 +78,8 @@ def _prediction_lag_features(
     """Attach the last prediction observation at/before t-lookback.
 
     The `by=contract_id` boundary prevents a lookback from leaking across
-    adjacent contracts.
+    adjacent contracts. `pm_lag_staleness_ms` records how far before the exact
+    requested lookback target the matched observation actually occurred.
     """
 
     ts = config.timestamp_col
@@ -107,6 +116,9 @@ def _prediction_lag_features(
             ((pl.col(ts) - pl.col("pm_lag_timestamp_ns")) / 1_000_000).alias(
                 "pm_effective_lookback_ms"
             ),
+            ((pl.col("_lookback_ns") - pl.col("pm_lag_timestamp_ns")) / 1_000_000).alias(
+                "pm_lag_staleness_ms"
+            ),
         )
     )
 
@@ -138,6 +150,11 @@ def _btc_lag_features(
             right_on="btc_timestamp_ns",
             strategy="backward",
         )
+        .with_columns(
+            ((pl.col(ts) - pl.col("btc_timestamp_ns")) / 1_000_000).alias(
+                "btc_now_age_ms"
+            )
+        )
     )
 
     btc_lag = (
@@ -157,6 +174,9 @@ def _btc_lag_features(
             strategy="backward",
         )
         .with_columns(
+            ((pl.col("_lookback_ns") - pl.col("btc_lag_timestamp_ns")) / 1_000_000).alias(
+                "btc_lag_age_ms"
+            ),
             (pl.col("btc_price") - pl.col("btc_lag_price")).alias(
                 "btc_lookback_move_usd"
             ),
@@ -176,13 +196,21 @@ def _signal_expression(config: LeadLagConfig) -> pl.Expr:
     else:
         prediction_condition = pl.col("pm_change").abs() >= config.shock_points
 
-    return (
+    condition = (
         prediction_condition
         & (pl.col("btc_lookback_move_usd").abs() <= config.max_btc_move_usd)
         & pl.col("pm_lag_probability").is_not_null()
         & pl.col("btc_lag_price").is_not_null()
         & pl.col("btc_price").is_not_null()
     )
+    if config.max_feature_staleness_ms is not None:
+        max_age = float(config.max_feature_staleness_ms)
+        condition &= (
+            (pl.col("pm_lag_staleness_ms") <= max_age)
+            & (pl.col("btc_lag_age_ms") <= max_age)
+            & (pl.col("btc_now_age_ms") <= max_age)
+        )
+    return condition
 
 
 def _attach_forward_btc(
@@ -198,6 +226,7 @@ def _attach_forward_btc(
     target_col = f"_target_{horizon_ms}_ns"
     future_ts_col = f"btc_future_{label}_timestamp_ns"
     future_px_col = f"btc_future_{label}_price"
+    delay_col = f"btc_future_{label}_delay_ms"
 
     right = (
         btc.select(
@@ -207,7 +236,7 @@ def _attach_forward_btc(
         .sort(future_ts_col)
     )
 
-    return (
+    joined = (
         signals
         .with_columns((pl.col(ts) + horizon_ms * 1_000_000).alias(target_col))
         .sort(target_col)
@@ -218,16 +247,29 @@ def _attach_forward_btc(
             strategy="forward",
         )
         .with_columns(
-            (pl.col(future_px_col) - pl.col("btc_price")).alias(
-                f"btc_move_{label}_usd"
-            ),
-            (
-                (pl.col(future_px_col) / pl.col("btc_price") - 1.0) * 10_000
-            ).alias(f"btc_return_{label}_bps"),
-            (
-                (pl.col(future_px_col) - pl.col("btc_price"))
-                * pl.col("pm_change").sign()
-            ).alias(f"directional_move_{label}_usd"),
+            ((pl.col(future_ts_col) - pl.col(target_col)) / 1_000_000).alias(delay_col)
+        )
+    )
+
+    valid_future = pl.col(future_px_col).is_not_null()
+    if config.max_forward_delay_ms is not None:
+        valid_future &= pl.col(delay_col) <= float(config.max_forward_delay_ms)
+
+    return (
+        joined
+        .with_columns(
+            pl.when(valid_future)
+            .then(pl.col(future_px_col) - pl.col("btc_price"))
+            .otherwise(None)
+            .alias(f"btc_move_{label}_usd"),
+            pl.when(valid_future)
+            .then((pl.col(future_px_col) / pl.col("btc_price") - 1.0) * 10_000)
+            .otherwise(None)
+            .alias(f"btc_return_{label}_bps"),
+            pl.when(valid_future)
+            .then((pl.col(future_px_col) - pl.col("btc_price")) * pl.col("pm_change").sign())
+            .otherwise(None)
+            .alias(f"directional_move_{label}_usd"),
         )
         .drop(target_col)
         .sort(ts)
@@ -251,7 +293,7 @@ def _attach_expiry_btc(
         .sort("btc_expiry_timestamp_ns")
     )
 
-    return (
+    joined = (
         signals.sort(config.expiry_col)
         .join_asof(
             btc_right,
@@ -260,16 +302,30 @@ def _attach_expiry_btc(
             strategy="forward",
         )
         .with_columns(
-            (pl.col("btc_expiry_price") - pl.col("btc_price")).alias(
-                "btc_move_expiry_usd"
-            ),
-            (
-                (pl.col("btc_expiry_price") / pl.col("btc_price") - 1.0) * 10_000
-            ).alias("btc_return_expiry_bps"),
-            (
-                (pl.col("btc_expiry_price") - pl.col("btc_price"))
-                * pl.col("pm_change").sign()
-            ).alias("directional_move_expiry_usd"),
+            ((pl.col("btc_expiry_timestamp_ns") - pl.col(config.expiry_col)) / 1_000_000).alias(
+                "btc_expiry_delay_ms"
+            )
+        )
+    )
+    valid_expiry = pl.col("btc_expiry_price").is_not_null()
+    if config.max_forward_delay_ms is not None:
+        valid_expiry &= pl.col("btc_expiry_delay_ms") <= float(config.max_forward_delay_ms)
+
+    return (
+        joined
+        .with_columns(
+            pl.when(valid_expiry)
+            .then(pl.col("btc_expiry_price") - pl.col("btc_price"))
+            .otherwise(None)
+            .alias("btc_move_expiry_usd"),
+            pl.when(valid_expiry)
+            .then((pl.col("btc_expiry_price") / pl.col("btc_price") - 1.0) * 10_000)
+            .otherwise(None)
+            .alias("btc_return_expiry_bps"),
+            pl.when(valid_expiry)
+            .then((pl.col("btc_expiry_price") - pl.col("btc_price")) * pl.col("pm_change").sign())
+            .otherwise(None)
+            .alias("directional_move_expiry_usd"),
         )
         .sort(config.timestamp_col)
     )
@@ -288,7 +344,7 @@ def build_lead_lag_events(
     Required BTC columns:
       timestamp_ns, price.
 
-    `timestamp_ns` must be UTC Unix nanoseconds.  The BTC input should already
+    `timestamp_ns` must be UTC Unix nanoseconds. The BTC input should already
     represent the chosen source (Binance, Coinbase, or a deliberately constructed
     composite) rather than mixing venues implicitly.
     """
@@ -307,17 +363,26 @@ def build_lead_lag_events(
         "BTC frame",
     )
 
-    pred = prediction.with_columns(
-        pl.col(config.timestamp_col).cast(pl.Int64),
-        pl.col(config.probability_col).cast(pl.Float64),
+    expressions = [
+        pl.col(config.timestamp_col).cast(pl.Int64, strict=False),
+        pl.col(config.probability_col).cast(pl.Float64, strict=False),
+    ]
+    if config.expiry_col in prediction.columns:
+        expressions.append(pl.col(config.expiry_col).cast(pl.Int64, strict=False))
+    pred = (
+        prediction
+        .with_columns(*expressions)
+        .drop_nulls([config.timestamp_col, config.contract_col, config.probability_col])
+        .filter(pl.col(config.probability_col).is_between(0.0, 1.0, closed="both"))
     )
 
     btc_clean = (
         btc.with_columns(
-            pl.col(config.timestamp_col).cast(pl.Int64),
-            pl.col(config.btc_price_col).cast(pl.Float64),
+            pl.col(config.timestamp_col).cast(pl.Int64, strict=False),
+            pl.col(config.btc_price_col).cast(pl.Float64, strict=False),
         )
         .drop_nulls([config.timestamp_col, config.btc_price_col])
+        .filter(pl.col(config.btc_price_col) > 0)
         .sort(config.timestamp_col)
     )
 
@@ -342,66 +407,81 @@ def summarize_lead_lag(
     events: pl.DataFrame,
     horizons_ms: Iterable[int] = FORWARD_HORIZONS_MS,
 ) -> pl.DataFrame:
-    """Create a compact horizon-by-horizon diagnostic table."""
+    """Create a compact horizon-by-horizon diagnostic table.
+
+    `signals` is the number of events with a valid label for that horizon;
+    `qualifying_signals` is the total number of events before label availability
+    is considered. This prevents end-of-file or sparse-data nulls from inflating
+    the apparent sample size.
+    """
 
     rows: list[dict[str, float | int | str | None]] = []
-    n = events.height
+    total_signals = events.height
 
     for horizon_ms in horizons_ms:
         label = FORWARD_HORIZON_LABELS.get(horizon_ms, f"{horizon_ms}ms")
         move_col = f"btc_move_{label}_usd"
         return_col = f"btc_return_{label}_bps"
         directional_col = f"directional_move_{label}_usd"
+        delay_col = f"btc_future_{label}_delay_ms"
         if move_col not in events.columns:
             continue
 
-        stats = events.select(
+        valid = events.filter(pl.col(move_col).is_not_null())
+        stats = valid.select(
             pl.col(move_col).mean().alias("mean_move"),
             pl.col(move_col).median().alias("median_move"),
             pl.col(return_col).mean().alias("mean_return_bps"),
             (pl.col(move_col) > 0).mean().alias("btc_up_rate"),
             (pl.col(directional_col) > 0).mean().alias("directional_hit_rate"),
             pl.col(directional_col).mean().alias("mean_directional_move"),
+            pl.col(delay_col).mean().alias("mean_delay_ms"),
+            pl.col(delay_col).max().alias("max_delay_ms"),
         ).row(0, named=True)
 
         rows.append(
             {
                 "horizon": label,
                 "horizon_ms": horizon_ms,
-                "signals": n,
+                "signals": valid.height,
+                "qualifying_signals": total_signals,
                 "mean_btc_move_usd": stats["mean_move"],
                 "median_btc_move_usd": stats["median_move"],
                 "mean_btc_return_bps": stats["mean_return_bps"],
                 "btc_up_rate": stats["btc_up_rate"],
                 "directional_hit_rate": stats["directional_hit_rate"],
                 "mean_directional_move_usd": stats["mean_directional_move"],
+                "mean_label_delay_ms": stats["mean_delay_ms"],
+                "max_label_delay_ms": stats["max_delay_ms"],
             }
         )
 
     if "btc_move_expiry_usd" in events.columns:
-        stats = events.select(
+        valid = events.filter(pl.col("btc_move_expiry_usd").is_not_null())
+        stats = valid.select(
             pl.col("btc_move_expiry_usd").mean().alias("mean_move"),
             pl.col("btc_move_expiry_usd").median().alias("median_move"),
             pl.col("btc_return_expiry_bps").mean().alias("mean_return_bps"),
             (pl.col("btc_move_expiry_usd") > 0).mean().alias("btc_up_rate"),
-            (pl.col("directional_move_expiry_usd") > 0)
-            .mean()
-            .alias("directional_hit_rate"),
-            pl.col("directional_move_expiry_usd")
-            .mean()
-            .alias("mean_directional_move"),
+            (pl.col("directional_move_expiry_usd") > 0).mean().alias("directional_hit_rate"),
+            pl.col("directional_move_expiry_usd").mean().alias("mean_directional_move"),
+            pl.col("btc_expiry_delay_ms").mean().alias("mean_delay_ms"),
+            pl.col("btc_expiry_delay_ms").max().alias("max_delay_ms"),
         ).row(0, named=True)
         rows.append(
             {
                 "horizon": "expiry",
                 "horizon_ms": None,
-                "signals": n,
+                "signals": valid.height,
+                "qualifying_signals": total_signals,
                 "mean_btc_move_usd": stats["mean_move"],
                 "median_btc_move_usd": stats["median_move"],
                 "mean_btc_return_bps": stats["mean_return_bps"],
                 "btc_up_rate": stats["btc_up_rate"],
                 "directional_hit_rate": stats["directional_hit_rate"],
                 "mean_directional_move_usd": stats["mean_directional_move"],
+                "mean_label_delay_ms": stats["mean_delay_ms"],
+                "max_label_delay_ms": stats["max_delay_ms"],
             }
         )
 
