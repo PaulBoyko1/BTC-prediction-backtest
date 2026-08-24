@@ -14,8 +14,9 @@ function compare(value, operator, threshold, previousValue = null) {
   if (operator === '>') return value > threshold;
   if (operator === 'abs>=') return Math.abs(value) >= threshold;
   if (operator === 'abs<=') return Math.abs(value) <= threshold;
-  if (operator === 'crosses_up') return Number.isFinite(Number(previousValue)) && previousValue < threshold && value >= threshold;
-  if (operator === 'crosses_down') return Number.isFinite(Number(previousValue)) && previousValue > threshold && value <= threshold;
+  const hasPrevious = previousValue !== null && previousValue !== undefined && Number.isFinite(Number(previousValue));
+  if (operator === 'crosses_up') return hasPrevious && previousValue < threshold && value >= threshold;
+  if (operator === 'crosses_down') return hasPrevious && previousValue > threshold && value <= threshold;
   return false;
 }
 
