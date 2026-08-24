@@ -35,6 +35,7 @@ python -m backend.cli lead-lag \
   --shock-points 0.08 \
   --max-btc-move-usd 20 \
   --direction either \
+  --signal-cooldown-ms 5000 \
   --max-feature-staleness-ms 250 \
   --max-forward-delay-ms 100 \
   --output data/cache/kalshi_lead_lag.parquet
@@ -42,11 +43,24 @@ python -m backend.cli lead-lag \
 
 The engine uses backward `join_asof` operations for historical features and forward `join_asof` operations only for labels. The test suite explicitly changes future BTC prices and verifies that selected signals do not change.
 
+### Signal dependence / de-clustering
+
+One persistent repricing episode can create many adjacent qualifying ticks. `--signal-cooldown-ms` optionally keeps the first qualifying event and then requires that amount of time before another event from the **same contract** is kept. A value of `0` preserves every raw qualifying tick.
+
+Summary output reports separately:
+
+- `raw_qualifying_signals` — qualifying ticks before de-clustering;
+- `qualifying_signals` — events after optional per-contract cooldown;
+- `unique_contracts` — distinct contracts represented;
+- `signals` — events that also have a valid label for that specific horizon.
+
+This does not make observations statistically independent by itself, but it prevents repeated ticks from silently masquerading as distinct shock episodes.
+
 ### Timing-quality controls
 
 A nominal horizon is not enough for high-frequency research. If the requested `100ms` target has no BTC observation until 600ms later, that must not silently be called a 100ms return.
 
-The event output therefore records:
+The event output records:
 
 - `pm_effective_lookback_ms` — actual age between signal and matched prediction observation;
 - `pm_lag_staleness_ms` — how far before the exact lookback target the prediction match occurred;
@@ -55,9 +69,9 @@ The event output therefore records:
 - `btc_future_<horizon>_delay_ms` — how late the actual BTC label arrives after the requested forward target;
 - `btc_expiry_delay_ms` — same concept for expiry.
 
-`--max-feature-staleness-ms` rejects signals whose backward as-of matches are older than the chosen tolerance. `--max-forward-delay-ms` keeps the signal but nulls a future label whose observation arrives too late. Summaries report both `qualifying_signals` and the number of valid labeled `signals` per horizon.
+`--max-feature-staleness-ms` rejects signals whose backward as-of matches are older than the chosen tolerance. `--max-forward-delay-ms` keeps the signal but nulls a future label whose observation arrives too late.
 
-Choose tolerances based on the native data frequency and hypothesis. A tolerance appropriate for a 5-minute technical study may be completely unacceptable for a 100ms lead/lag claim.
+Choose tolerances based on native data frequency and hypothesis. A tolerance appropriate for a 5-minute technical study may be unacceptable for a 100ms lead/lag claim.
 
 ## Minimum normalized inputs
 
@@ -76,6 +90,30 @@ BTC Parquet:
 Keep Binance, Coinbase and any composite as distinct datasets or explicitly identified columns. Do not create an unnamed blended price.
 
 Rows with invalid prediction probabilities outside `[0,1]`, missing required timestamps/probabilities, or nonpositive BTC prices are rejected before signal generation.
+
+## Reconstructed BTC TWAP proxy
+
+`backend/twap_proxy.py` calculates an actual **time-weighted** average from irregular BTC ticks. It assumes each observed price remains in force until the next observation, which is appropriate for reconstructing a transparent piecewise-constant proxy from event data.
+
+Example:
+
+```bash
+python -m backend.cli twap-proxy \
+  --btc data/normalized/binance_btc.parquet \
+  --targets data/normalized/polymarket_targets.parquet \
+  --window-seconds 60 \
+  --source-label binance \
+  --max-start-staleness-ms 1000 \
+  --output data/cache/binance_twap_60s_proxy.parquet
+```
+
+Rules:
+
+- a price must exist at or before the start of the requested window;
+- optional start-price staleness can make an otherwise mathematically computable window invalid;
+- output records `complete_window`, `start_staleness_ms`, `source_label`, and `is_exact_source=false`;
+- 30s/60s are ordinary parameter values, not hard-coded assumptions;
+- the proxy is **not** Chainlink and must not be presented as exact Polymarket settlement-reference data.
 
 ## Exact settlement-reference sources
 
@@ -121,7 +159,7 @@ npm run chainlink:reference -- latest <feedId> data/raw/chainlink/latest.json
 npm run chainlink:reference -- page <feedId> <startUnixSeconds> 100 data/raw/chainlink/page.json
 ```
 
-The official SDK's historical-page example documents a last-30-days timestamp constraint. Do **not** assume the normal Data Streams API provides 1–3 years of historical TWAP reports. Older exact Polymarket reference-path tests require an authorized archive; a reconstructed Binance/Coinbase TWAP may be used only as a clearly labeled proxy/calibration series.
+The official SDK's historical-page example documents a last-30-days timestamp constraint. Do **not** assume the normal Data Streams API provides 1–3 years of historical TWAP reports. Older exact Polymarket reference-path tests require an authorized archive; the reconstructed TWAP command above is only a clearly labeled proxy/calibration series.
 
 ## Data-quality labels
 
