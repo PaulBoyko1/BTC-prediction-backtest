@@ -7,9 +7,9 @@
  * SDK and writes raw/decoded reports so Polymarket settlement-reference studies can
  * remain distinct from Binance/Coinbase spot proxies.
  *
- * Required environment variables:
- *   API_KEY
- *   USER_SECRET
+ * Required environment variables (either naming style):
+ *   CHAINLINK_API_KEY / CHAINLINK_USER_SECRET
+ *   API_KEY / USER_SECRET
  *
  * Optional:
  *   CHAINLINK_REST_ENDPOINT=https://api.dataengine.chain.link
@@ -50,10 +50,13 @@ Important:
 }
 
 function requireCredentials() {
-  const apiKey = process.env.API_KEY;
-  const userSecret = process.env.USER_SECRET;
+  const apiKey = process.env.CHAINLINK_API_KEY || process.env.API_KEY;
+  const userSecret = process.env.CHAINLINK_USER_SECRET || process.env.USER_SECRET;
   if (!apiKey || !userSecret) {
-    throw new Error('Missing API_KEY / USER_SECRET Chainlink Data Streams credentials.');
+    throw new Error(
+      'Missing Chainlink credentials. Set CHAINLINK_API_KEY / CHAINLINK_USER_SECRET '
+      + '(or the SDK-standard API_KEY / USER_SECRET).'
+    );
   }
   return { apiKey, userSecret };
 }
@@ -100,8 +103,9 @@ function warnRetention(timestampSeconds) {
   const ageSeconds = Math.floor(Date.now() / 1000) - Number(timestampSeconds);
   if (ageSeconds > 30 * 86400) {
     console.warn(
-      'WARNING: requested start is older than 30 days. The official SDK example '
-      + 'documents a 30-day historical-page limit; this request may be rejected.'
+      'WARNING: requested timestamp is older than 30 days. The official SDK '
+      + 'historical-page example documents a 30-day limit; do not assume this '
+      + 'request will be available on the normal Data Streams API.'
     );
   }
 }
