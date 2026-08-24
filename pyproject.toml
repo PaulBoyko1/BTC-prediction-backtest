@@ -1,0 +1,17 @@
+[project]
+name = "btc-prediction-research"
+version = "0.1.0"
+description = "High-frequency historical research backend for BTC prediction-market backtests"
+requires-python = ">=3.11"
+dependencies = [
+  "polars>=1.20",
+  "duckdb>=1.2",
+  "pyarrow>=19",
+  "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
