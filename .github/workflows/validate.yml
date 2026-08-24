@@ -51,6 +51,9 @@ jobs:
           test -f API_NOTES.md
           test -f DATA_SCHEMA.md
           test -f REFERENCE_DATA_RESEARCH.md
+          test -f BUG_AUDIT.md
+          test -f LOGIC_AUDIT.md
+          test -f VALIDATION_NOTES.md
           test -f pyproject.toml
           test -f .env.example
           test -f scripts/ingest.mjs
