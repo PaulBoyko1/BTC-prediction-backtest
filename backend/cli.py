@@ -56,6 +56,8 @@ def command_lead_lag(args: argparse.Namespace) -> int:
         contract_col=args.contract_col,
         btc_price_col=args.btc_price_col,
         expiry_col=args.expiry_col,
+        max_feature_staleness_ms=args.max_feature_staleness_ms,
+        max_forward_delay_ms=args.max_forward_delay_ms,
     )
 
     events = build_lead_lag_events(prediction, btc, config)
@@ -134,6 +136,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_horizons,
         default=FORWARD_HORIZONS_MS,
         help="Comma-separated milliseconds, e.g. 100,250,500,1000,5000",
+    )
+    lead_lag.add_argument(
+        "--max-feature-staleness-ms",
+        type=int,
+        help="Optional maximum age of backward as-of feature matches. Older matches are rejected.",
+    )
+    lead_lag.add_argument(
+        "--max-forward-delay-ms",
+        type=int,
+        help="Optional maximum delay after each target horizon. Later labels are set null.",
     )
     lead_lag.add_argument("--probability-col", default="yes_mid")
     lead_lag.add_argument("--timestamp-col", default="timestamp_ns")
