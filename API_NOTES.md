@@ -38,7 +38,7 @@ Useful real-time channels include public trades/ticker and order-book updates. T
 
 ### BTC 15-minute settlement reference
 
-Current BTC 15-minute market rules describe the **CF Benchmarks Bitcoin Real-Time Index (BRTI)**. The current rule examples collect 60 RTI observations, one per second during the final minute, and use the simple average for settlement comparison.
+Current BTC 15-minute market rules describe the **CF Benchmarks Bitcoin Real-Time Index (BRTI)**. Current rule examples collect 60 RTI observations, one per second during the final minute, and use the simple average for settlement comparison.
 
 Therefore a Kalshi BTC15m backtest should preserve at least:
 
@@ -93,9 +93,15 @@ Therefore Polymarket rows keep a distinct `polyReferencePrice` field. An exact h
 
 ## Binance
 
-Public spot root currently used by the adapter:
+For public market-data-only access the adapter now uses Binance's documented data-only host:
 
-`https://api.binance.com/api/v3`
+`https://data-api.binance.vision/api/v3`
+
+and the corresponding public market-data WebSocket host:
+
+`wss://data-stream.binance.vision:443`
+
+These hosts expose public market data without API-key authentication and avoid relying on the normal global API host, which can be region-restricted.
 
 Adapter coverage:
 
@@ -103,6 +109,9 @@ Adapter coverage:
 - Klines
 - Aggregate trades
 - Current depth
+- Binance.US ticker fallback/diagnostic
+
+For multi-year research, Binance also publishes official daily/monthly public archive files at `data.binance.vision`, including aggregate trades and klines. From 2025-01-01 onward, the official spot public-data archive documents microsecond timestamps. Preserve that precision during ingestion.
 
 For lead/lag research, aggregate/raw trades and depth events are more useful than 1-minute/5-minute candles. Candle bars are appropriate for VWAP/EMA/prior-period feature construction, not for proving a 200ms–2s lead.
 
@@ -159,6 +168,25 @@ Production path:
 
 The browser should not repeatedly download and process multi-year raw tick history.
 
+## Read-only ingestion CLI
+
+The repository now includes `scripts/ingest.mjs`. It performs public GET requests only and saves raw responses under `data/raw/` (ignored by git).
+
+Examples:
+
+```bash
+npm run ingest -- connections
+npm run ingest -- kalshi-market --ticker <TICKER>
+npm run ingest -- kalshi-trades --ticker <TICKER> --start 2026-08-01 --end 2026-08-02
+npm run ingest -- poly-history --token <TOKEN_ID> --start 2026-08-01 --end 2026-08-02
+npm run ingest -- poly-trades --condition <CONDITION_ID> --start 2026-08-01 --end 2026-08-02
+npm run ingest -- binance-klines --start 2026-08-01 --end 2026-08-02 --interval 1m
+npm run ingest -- binance-aggtrades --start 2026-08-01 --end 2026-08-02
+npm run ingest -- coinbase-candles --start 2026-08-01 --end 2026-08-02 --granularity 60
+```
+
+This is the acquisition entry point, not the final normalized feature store.
+
 ## Required normalized prediction fields
 
 At minimum:
@@ -197,6 +225,15 @@ Derived bars/features can then add VWAP, EMA, returns, realized volatility, prio
 
 Factors such as “Kalshi +8¢ in 5 seconds” or “BTC moved less than $20 in 5 seconds” must eventually be computed from timestamp-indexed history for the exact configured lookback. The current synthetic demo stores representative derived values so UI/execution behavior can be exercised; it is not the production feature engine.
 
+## Settlement Reference Lab
+
+`reference.html` is intentionally availability-gated.
+
+- **Exact historical source** mode withholds charts until an exact matching settlement-reference archive is connected.
+- **Synthetic mechanics demo** shows the analysis plumbing only and is visibly labeled as synthetic.
+
+This prevents an exchange proxy from being presented as BRTI or Chainlink.
+
 ## Fee / execution history
 
 Real backtests should eventually version fees by venue and date. The UI currently exposes explicit entry/exit fee and slippage allowances so conservative sensitivity testing can begin before a full historical fee schedule is encoded.
@@ -209,9 +246,10 @@ Connected in source code:
 
 - Kalshi public REST
 - Polymarket Gamma / CLOB / Data API
-- Binance public REST
+- Binance market-data-only REST/WebSocket constants
 - Coinbase public Exchange REST
 - current WebSocket endpoint constants
+- read-only raw ingestion CLI
 
 Not yet completed:
 
