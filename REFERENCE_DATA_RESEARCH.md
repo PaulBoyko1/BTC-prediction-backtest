@@ -4,12 +4,12 @@ Research checked 2026-08-23 against current first-party/official sources where a
 
 ## Executive conclusion
 
-Exact settlement-reference backtesting is feasible, but the two venues have different acquisition paths:
+Exact settlement-reference backtesting is feasible for some layers, but the two venues have different acquisition paths and **we must not assume multi-year oracle tick retention**:
 
 - **Kalshi / CF Benchmarks BRTI:** exact historical BRTI exists back to November 2016 through CME market-data channels/DataMine, but it is licensed/entitled data rather than a zero-auth public archive.
-- **Polymarket / Chainlink Data Streams:** Chainlink's Data Streams SDK supports historical report retrieval by feed ID/timestamp and paginated historical access, but valid Data Streams credentials are required. Public Chainlink product pages show delayed informational data and direct users to request access for real-time reports.
+- **Polymarket / Chainlink Data Streams:** Chainlink's official SDK supports latest, timestamped and paginated historical report retrieval with valid Data Streams credentials. However, the official historical-page SDK example explicitly warns that its requested timestamp must be **within the last 30 days**. Credentials therefore do **not** establish that a 1–3 year Chainlink Data Streams archive can be pulled from the normal API. Older exact TWAP history requires a separate archive/provider or must be treated as unavailable.
 
-This means neither exact source is a dead end. The project should support credentialed/licensed adapters rather than replacing them with exchange spot.
+Outcome-only tests are easier than intracontract oracle-path tests: Kalshi/Polymarket resolved metadata can establish the actual settlement result even when raw oracle ticks are unavailable.
 
 ---
 
@@ -98,26 +98,44 @@ Official Polymarket examples:
 - https://polymarket.com/event/btc-updown-5m-1786977900
 - https://polymarket.com/event/btc-updown-5m-1787236500
 
-### Historical Chainlink access
+### Historical Chainlink access — important retention limit
 
-Chainlink's official Data Streams SDK/API supports:
+Chainlink's official Data Streams TypeScript SDK supports:
 
-- latest report retrieval;
-- historical report retrieval for a feed at a timestamp;
-- paginated historical report access;
+- `listFeeds()`;
+- `getLatestReport(feedId)`;
+- `getReportByTimestamp(feedId, timestamp)`;
+- `getReportsPage(feedId, startTime, limit?)`;
+- `getReportsBulk(feedIds, timestamp)`;
 - WebSocket real-time streaming.
 
-It requires valid Chainlink Data Streams API credentials (`API_KEY` and user secret). Mainnet REST endpoint examples use `https://api.dataengine.chain.link`.
+It requires valid Chainlink Data Streams API credentials (`API_KEY` and `USER_SECRET`). Mainnet examples use:
+
+- REST: `https://api.dataengine.chain.link`
+- WebSocket: `wss://ws.dataengine.chain.link`
+
+But the SDK's own `get-reports-page` example states: **"The timestamp must be within the last 30 days."** We should treat the standard Data Streams historical API as recent-history access unless Chainlink explicitly grants/ documents deeper retention for our account/product.
 
 Official/maintained package information:
 
 - https://www.npmjs.com/package/@chainlink/data-streams-sdk
+- https://github.com/smartcontractkit/data-streams-sdk/tree/main/typescript
+- https://github.com/smartcontractkit/data-streams-sdk/blob/main/typescript/examples/get-reports-page.ts
 - https://chain.link/data-streams
-- https://data.chain.link/streams/btc-usd-cexprice-streams
 
-The public Chainlink data pages are informational/delayed and direct users to request access for real-time reports. We should therefore implement a credentialed Data Streams adapter rather than expect anonymous historical downloads.
+The public Chainlink data pages are informational/delayed and direct users to request access for real-time reports.
 
-### What we can still do without Chainlink credentials
+### Consequence for older Polymarket reference-path tests
+
+For historical periods outside whatever Data Streams retention our credentials actually provide, we need one of:
+
+1. an official/authorized Chainlink archive with the exact TWAP stream;
+2. a third-party archive that proves it captured the exact Chainlink reports and timestamps;
+3. our own forward collection going forward.
+
+If none exists, the reference-path test is **unavailable** for that period. Binance/Coinbase may still be shown as a `spot_proxy`, but never as the actual Chainlink resolution series.
+
+### What we can still do without Chainlink history
 
 For Polymarket outcome-only studies we can use Polymarket's own resolved result and market metadata.
 
@@ -132,13 +150,29 @@ we should require the exact Chainlink historical stream or mark the test unavail
 
 ---
 
-## 3. Practical data-quality tiers
+## 3. Real-history window policy
 
-### Tier A — exact
+The UI has 1y / 2y / 3y comparison panels, but real short-duration prediction-market series may have much less than three years of existence/history.
 
-Use exact venue settlement reference:
+Production behavior must be:
 
-- Kalshi BRTI history / Kalshi-published final BRTI values.
+- show the requested window only when the underlying venue/series actually covers it;
+- show **N/A / insufficient history** when it does not;
+- always display the exact first/last timestamp and sample count used;
+- never pad missing prediction-market history with synthetic data;
+- never reinterpret a six-month series as a "1-year" result merely because BTC data goes back one year.
+
+Third-party/open datasets already demonstrate Polymarket BTC 15m observations in March 2026, and public Kalshi discussion/pages demonstrate KXBTC15M activity by at least May 2026, but those observations do not establish the exact launch date. The ingestion job should determine actual first-available timestamps from the venue/archive and record them as metadata.
+
+---
+
+## 4. Practical data-quality tiers
+
+### Tier A — exact reference path
+
+Use exact venue settlement reference ticks/reports:
+
+- Kalshi BRTI history.
 - Chainlink Data Streams reports for the exact Polymarket resolution stream.
 
 Allowed label: `exact_reference`.
@@ -161,14 +195,15 @@ Tier C must never be presented as the actual settlement source.
 
 ---
 
-## 4. Next engineering actions
+## 5. Next engineering actions
 
-1. Add a Python/Polars/DuckDB backend for large Parquet datasets.
+1. Use Python/Polars/DuckDB for large Parquet datasets.
 2. Backfill Kalshi BTC15m metadata/trades/results plus Binance/Coinbase first.
 3. Add Polymarket contract metadata/trades while preserving each contract's resolution source verbatim.
 4. Add derivatives/perp features: funding, basis, OI, liquidations, perp book imbalance.
 5. Add credential slots/adapters for:
    - CME DataMine BRTI;
-   - Chainlink Data Streams.
-6. Keep reference-specific charts/tests disabled when exact data is absent.
-7. For first-stage edge discovery, use conservative executable/taker assumptions; only build queue-aware maker/L2 reconstruction for surviving strategies.
+   - Chainlink Data Streams (recent history + forward capture).
+6. Investigate an authorized long-history Chainlink archive separately; do not assume the standard SDK retains it.
+7. Keep reference-specific charts/tests disabled when exact data is absent.
+8. For first-stage edge discovery, use conservative executable/taker assumptions; only build queue-aware maker/L2 reconstruction for surviving strategies.
