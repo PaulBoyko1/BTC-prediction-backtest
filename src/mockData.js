@@ -27,6 +27,15 @@ function quoteFromMid(mid, random, venueBias = 0) {
   return { bid, ask, mid: (bid + ask) / 2, last };
 }
 
+function complementaryQuote(yes) {
+  return {
+    bid: clamp(1 - yes.ask, 0.005, 0.99),
+    ask: clamp(1 - yes.bid, 0.01, 0.995),
+    mid: clamp(1 - yes.mid, 0.005, 0.995),
+    last: clamp(1 - yes.last, 0.005, 0.995),
+  };
+}
+
 function horizonSeconds(horizon) {
   if (horizon === '5m') return 300;
   if (horizon === '15m') return 900;
@@ -102,6 +111,8 @@ export function generateDemoDataset(years = 3, seed = 42) {
         const compositePrice = Math.max(1000, bridge + gaussian(random) * noiseScale);
         const binancePrice = compositePrice + gaussian(random) * 6;
         const coinbasePrice = compositePrice + gaussian(random) * 7;
+        const binanceBasis = binancePrice - compositePrice;
+        const coinbaseBasis = coinbasePrice - compositePrice;
         // These are synthetic stand-ins only. Real mode must use exact reference-source archives.
         const kalshiReferencePrice = compositePrice * 0.72 + previousSpot * 0.28 + gaussian(random) * 4;
         const polyReferencePrice = compositePrice + gaussian(random) * 5;
@@ -113,6 +124,10 @@ export function generateDemoDataset(years = 3, seed = 42) {
         const polyMidLatent = clamp(fairProb + latentFutureDirection * 0.008 * (1 - effectiveProgress) + gaussian(random) * 0.02, 0.02, 0.98);
         const k = quoteFromMid(kalshiMidLatent, random, 0);
         const p = quoteFromMid(polyMidLatent, random, gaussian(random) * 0.006);
+        const kNo = complementaryQuote(k);
+        // Polymarket YES/NO are separate outcome tokens. Give NO an independent
+        // synthetic book so the engine can verify it prefers explicit NO quotes.
+        const pNo = quoteFromMid(1 - polyMidLatent, random, gaussian(random) * 0.004);
         const elapsed = snap === 0 ? Math.max(1, totalSeconds / snapshots) : Math.max(1, totalSeconds * effectiveProgress / snap);
         const kalshiDelta = snap === 0 ? 0 : k.mid - previousKalshiMid;
         const polyDelta = snap === 0 ? 0 : p.mid - previousPolyMid;
@@ -121,13 +136,54 @@ export function generateDemoDataset(years = 3, seed = 42) {
         const expectedProbMoveFromBtc = btcMoveDollars / Math.max(500, uncertainty * 7);
         const kalshiResidual = kalshiDelta - expectedProbMoveFromBtc;
         const polyResidual = polyDelta - expectedProbMoveFromBtc;
+        const binanceExpectedProbMove = (btcMoveDollars + binanceBasis) / Math.max(500, uncertainty * 7);
+        const coinbaseExpectedProbMove = (btcMoveDollars + coinbaseBasis) / Math.max(500, uncertainty * 7);
         const vwapAnchor = dayOpen + (projectedClose - dayOpen) * Math.min(1, (offsetSeconds + totalSeconds * effectiveProgress) / 86400) * 0.65;
         const vwap = vwapAnchor + gaussian(random) * baseSpot * 0.0015;
         const emaSlow = compositePrice * (1 - macroDrift * 2) + gaussian(random) * 24;
         const emaFast = compositePrice * (1 + Math.sign(btcReturnPct) * 0.00035) + gaussian(random) * 14;
+        const realizedVolPct = contractVol * 100;
+
+        const sourceFields = {
+          compositeVwap: vwap,
+          binanceVwap: vwap + binanceBasis * 0.65,
+          coinbaseVwap: vwap + coinbaseBasis * 0.65,
+          compositeEmaFast: emaFast,
+          binanceEmaFast: emaFast + binanceBasis * 0.8,
+          coinbaseEmaFast: emaFast + coinbaseBasis * 0.8,
+          compositeEmaSlow: emaSlow,
+          binanceEmaSlow: emaSlow + binanceBasis * 0.55,
+          coinbaseEmaSlow: emaSlow + coinbaseBasis * 0.55,
+          compositeYesterdayHigh: yesterdayHigh,
+          binanceYesterdayHigh: yesterdayHigh + binanceBasis * 0.25,
+          coinbaseYesterdayHigh: yesterdayHigh + coinbaseBasis * 0.25,
+          compositeYesterdayLow: yesterdayLow,
+          binanceYesterdayLow: yesterdayLow + binanceBasis * 0.25,
+          coinbaseYesterdayLow: yesterdayLow + coinbaseBasis * 0.25,
+          compositeYesterdayClose: yesterdayClose,
+          binanceYesterdayClose: yesterdayClose + binanceBasis * 0.25,
+          coinbaseYesterdayClose: yesterdayClose + coinbaseBasis * 0.25,
+          compositePriorWeekAvgClose: priorWeekAvgClose,
+          binancePriorWeekAvgClose: priorWeekAvgClose + binanceBasis * 0.2,
+          coinbasePriorWeekAvgClose: priorWeekAvgClose + coinbaseBasis * 0.2,
+          compositePriorWeekHigh: priorWeekHigh,
+          binancePriorWeekHigh: priorWeekHigh + binanceBasis * 0.2,
+          coinbasePriorWeekHigh: priorWeekHigh + coinbaseBasis * 0.2,
+          compositePriorWeekLow: priorWeekLow,
+          binancePriorWeekLow: priorWeekLow + binanceBasis * 0.2,
+          coinbasePriorWeekLow: priorWeekLow + coinbaseBasis * 0.2,
+          compositePriorWeekClose: priorWeekClose,
+          binancePriorWeekClose: priorWeekClose + binanceBasis * 0.2,
+          coinbasePriorWeekClose: priorWeekClose + coinbaseBasis * 0.2,
+          compositeRealizedVolPct: realizedVolPct,
+          binanceRealizedVolPct: realizedVolPct * (0.985 + random() * 0.03),
+          coinbaseRealizedVolPct: realizedVolPct * (0.98 + random() * 0.04),
+        };
 
         rows.push({
           timestamp: new Date(timestamp).toISOString(),
+          kalshiQuoteTimestamp: new Date(timestamp - Math.round(random() * 350)).toISOString(),
+          polyQuoteTimestamp: new Date(timestamp - Math.round(random() * 350)).toISOString(),
           expiryTs,
           contractId,
           marketHorizon,
@@ -153,21 +209,36 @@ export function generateDemoDataset(years = 3, seed = 42) {
           priorWeekClose,
           btcReturnPct,
           btcMoveDollars,
-          realizedVolPct: contractVol * 100,
+          realizedVolPct,
+          ...sourceFields,
           kalshiYesBid: k.bid,
           kalshiYesAsk: k.ask,
           kalshiYesMid: k.mid,
           kalshiYesLast: k.last,
+          kalshiNoBid: kNo.bid,
+          kalshiNoAsk: kNo.ask,
+          kalshiNoMid: kNo.mid,
+          kalshiNoLast: kNo.last,
           polyYesBid: p.bid,
           polyYesAsk: p.ask,
           polyYesMid: p.mid,
           polyYesLast: p.last,
+          polyNoBid: pNo.bid,
+          polyNoAsk: pNo.ask,
+          polyNoMid: pNo.mid,
+          polyNoLast: pNo.last,
           kalshiDelta,
           polyDelta,
           kalshiVelocity: kalshiDelta / elapsed,
           polyVelocity: polyDelta / elapsed,
           kalshiResidual,
           polyResidual,
+          kalshiCompositeResidual: kalshiResidual,
+          polyCompositeResidual: polyResidual,
+          kalshiBinanceResidual: kalshiDelta - binanceExpectedProbMove,
+          polyBinanceResidual: polyDelta - binanceExpectedProbMove,
+          kalshiCoinbaseResidual: kalshiDelta - coinbaseExpectedProbMove,
+          polyCoinbaseResidual: polyDelta - coinbaseExpectedProbMove,
           kalshiBookImbalance: clamp((fairProb - 0.5) * 1.2 + gaussian(random) * 0.3, -1, 1),
           polyBookImbalance: clamp((fairProb - 0.5) + gaussian(random) * 0.34, -1, 1),
         });
