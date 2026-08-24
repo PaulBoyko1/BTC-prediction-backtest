@@ -7,6 +7,7 @@ spot. Callers must decide explicitly whether a study is `exact_reference`,
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,9 +40,15 @@ class CMEDataMineClient:
         self.credentials = credentials
         self.timeout_seconds = timeout_seconds
         self._token: str | None = None
+        self._token_expires_at_monotonic = 0.0
 
     def access_token(self, *, force_refresh: bool = False) -> str:
-        if self._token and not force_refresh:
+        now = time.monotonic()
+        if (
+            self._token
+            and not force_refresh
+            and now < self._token_expires_at_monotonic
+        ):
             return self._token
 
         response = requests.post(
@@ -55,14 +62,40 @@ class CMEDataMineClient:
         token = payload.get("access_token")
         if not token:
             raise RuntimeError("CME auth response did not contain access_token")
+
+        expires_in = payload.get("expires_in", 1800)
+        try:
+            expires_seconds = max(60.0, float(expires_in))
+        except (TypeError, ValueError):
+            expires_seconds = 1800.0
+        # Refresh before CME's documented 30-minute expiry rather than racing it.
+        refresh_margin = min(60.0, expires_seconds * 0.1)
         self._token = str(token)
+        self._token_expires_at_monotonic = time.monotonic() + expires_seconds - refresh_margin
         return self._token
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, force_refresh: bool = False) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.access_token()}",
-            "User-Agent": "btc-prediction-research/0.1",
+            "Authorization": f"Bearer {self.access_token(force_refresh=force_refresh)}",
+            "User-Agent": "btc-prediction-research/0.4",
         }
+
+    def _get_with_auth_retry(self, url: str, **kwargs: Any) -> requests.Response:
+        response = requests.get(
+            url,
+            headers=self._headers(),
+            timeout=self.timeout_seconds,
+            **kwargs,
+        )
+        if response.status_code != 401:
+            return response
+        response.close()
+        return requests.get(
+            url,
+            headers=self._headers(force_refresh=True),
+            timeout=self.timeout_seconds,
+            **kwargs,
+        )
 
     def list_entitled_files(self, **filters: Any) -> dict[str, Any]:
         """Query the CME DataMine List API.
@@ -73,14 +106,12 @@ class CMEDataMineClient:
         """
 
         params = {key: value for key, value in filters.items() if value is not None}
-        response = requests.get(
-            CME_LIST_URL,
-            headers=self._headers(),
-            params=params,
-            timeout=self.timeout_seconds,
-        )
-        response.raise_for_status()
-        return response.json()
+        response = self._get_with_auth_retry(CME_LIST_URL, params=params)
+        try:
+            response.raise_for_status()
+            return response.json()
+        finally:
+            response.close()
 
     def download_file(
         self,
@@ -93,21 +124,23 @@ class CMEDataMineClient:
 
         if not file_id:
             raise ValueError("file_id is required")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
 
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-
-        with requests.get(
+        response = self._get_with_auth_retry(
             CME_DOWNLOAD_URL,
-            headers=self._headers(),
             params={"fid": file_id},
-            timeout=self.timeout_seconds,
             stream=True,
-        ) as response:
+        )
+        try:
             response.raise_for_status()
             with output.open("wb") as handle:
                 for chunk in response.iter_content(chunk_size=chunk_size):
                     if chunk:
                         handle.write(chunk)
+        finally:
+            response.close()
 
         return output
