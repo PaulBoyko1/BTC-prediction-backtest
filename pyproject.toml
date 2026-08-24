@@ -8,6 +8,7 @@ dependencies = [
   "duckdb>=1.2",
   "pyarrow>=19",
   "numpy>=2.0",
+  "requests>=2.32",
 ]
 
 [project.optional-dependencies]
