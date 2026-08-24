@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from pathlib import Path
 
 import polars as pl
 
 from .config import FORWARD_HORIZONS_MS
 from .lead_lag import LeadLagConfig, build_lead_lag_events, summarize_lead_lag
+from .reference_sources import CMEDataMineClient, CMEDataMineCredentials
 
 
 def _parse_horizons(text: str) -> tuple[int, ...]:
@@ -25,6 +28,17 @@ def _read_parquet(path: str | Path) -> pl.DataFrame:
     if not path.exists():
         raise FileNotFoundError(path)
     return pl.read_parquet(path)
+
+
+def _cme_client() -> CMEDataMineClient:
+    api_id = os.environ.get("CME_DATAMINE_API_ID", "")
+    password = os.environ.get("CME_DATAMINE_API_PASSWORD", "")
+    if not api_id or not password:
+        raise RuntimeError(
+            "Set CME_DATAMINE_API_ID and CME_DATAMINE_API_PASSWORD. "
+            "These credentials must be entitled to the requested CME DataMine files."
+        )
+    return CMEDataMineClient(CMEDataMineCredentials(api_id, password))
 
 
 def command_lead_lag(args: argparse.Namespace) -> int:
@@ -67,6 +81,31 @@ def command_lead_lag(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_cme_list(args: argparse.Namespace) -> int:
+    payload = _cme_client().list_entitled_files(
+        category_code=args.category_code,
+        dataset_code=args.dataset_code,
+        period_date=args.period_date,
+        limit=args.limit,
+        offset=args.offset,
+    )
+    text = json.dumps(payload, indent=2)
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(f"{text}\n", encoding="utf-8")
+        print(f"saved {output}")
+    else:
+        print(text)
+    return 0
+
+
+def command_cme_download(args: argparse.Namespace) -> int:
+    output = _cme_client().download_file(args.file_id, args.output)
+    print(f"saved {output}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="btc-research",
@@ -102,6 +141,26 @@ def build_parser() -> argparse.ArgumentParser:
     lead_lag.add_argument("--btc-price-col", default="price")
     lead_lag.add_argument("--expiry-col", default="expiry_ns")
     lead_lag.set_defaults(func=command_lead_lag)
+
+    cme_list = subparsers.add_parser(
+        "cme-list",
+        help="List CME DataMine files already entitled to this API account",
+    )
+    cme_list.add_argument("--category-code")
+    cme_list.add_argument("--dataset-code")
+    cme_list.add_argument("--period-date", help="CME period date filter")
+    cme_list.add_argument("--limit", type=int, default=100)
+    cme_list.add_argument("--offset", type=int, default=0)
+    cme_list.add_argument("--output", help="Optional JSON output path")
+    cme_list.set_defaults(func=command_cme_list)
+
+    cme_download = subparsers.add_parser(
+        "cme-download",
+        help="Download one already-entitled CME DataMine file by file ID",
+    )
+    cme_download.add_argument("--file-id", required=True)
+    cme_download.add_argument("--output", required=True)
+    cme_download.set_defaults(func=command_cme_download)
 
     return parser
 
