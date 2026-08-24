@@ -37,7 +37,7 @@ jobs:
       - name: Compile Python backend
         run: python -m compileall -q backend
 
-      - name: Run Python lead-lag tests
+      - name: Run Python research tests
         run: pytest -q
 
       - name: Check required files
@@ -55,4 +55,8 @@ jobs:
           test -f .env.example
           test -f scripts/ingest.mjs
           test -f scripts/chainlink-reference.mjs
+          test -f src/uiGuardrails.js
+          test -f tests/logical-consistency.mjs
           test -f backend/lead_lag.py
+          test -f backend/twap_proxy.py
+          test -f backend/tests/test_twap_proxy.py
