@@ -25,6 +25,7 @@ def test_irregular_ticks_use_time_weighting_not_trade_count_average():
     assert result["complete_window"][0] is True
     assert result["is_exact_source"][0] is False
     assert result["source_label"][0] == "test-composite"
+    assert result["max_observation_gap_ms"][0] == 40_000.0
 
 
 def test_window_requires_price_at_or_before_start():
@@ -55,6 +56,30 @@ def test_start_staleness_can_fail_closed():
     assert result["start_staleness_ms"][0] == 10_000.0
     assert result["twap_proxy"][0] is None
     assert result["complete_window"][0] is False
+
+
+def test_large_observation_gap_can_fail_closed():
+    ticks = pl.DataFrame(
+        {
+            "timestamp_ns": [ns(0), ns(5), ns(55), ns(60)],
+            "price": [100.0, 101.0, 110.0, 111.0],
+        }
+    )
+    loose = build_twap_proxy(
+        ticks,
+        [ns(60)],
+        TwapProxyConfig(window_seconds=60),
+    )
+    strict = build_twap_proxy(
+        ticks,
+        [ns(60)],
+        TwapProxyConfig(window_seconds=60, max_observation_gap_ms=10_000),
+    )
+    assert loose["complete_window"][0] is True
+    assert loose["max_observation_gap_ms"][0] == 50_000.0
+    assert strict["complete_window"][0] is False
+    assert strict["twap_proxy"][0] is None
+    assert strict["max_observation_gap_ms"][0] == 50_000.0
 
 
 def test_multiple_targets_and_30_second_window():
