@@ -7,8 +7,8 @@ piecewise-constant time-weighted average from an explicitly chosen BTC source
 
 For irregular event timestamps, each observed price is assumed to remain in force
 until the next observation. A target window is valid only when a price observation
-exists at or before the window start; this prevents silently inventing the opening
-segment of a 30s/60s TWAP.
+exists at or before the window start; optional staleness/gap limits can make the
+proxy fail closed when acquisition continuity is not good enough for the study.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ class TwapProxyConfig:
     target_timestamp_col: str = "timestamp_ns"
     source_label: str = "btc_spot_proxy"
     max_start_staleness_ms: int | None = None
+    max_observation_gap_ms: int | None = None
 
 
 def _validate(config: TwapProxyConfig) -> None:
@@ -34,6 +35,8 @@ def _validate(config: TwapProxyConfig) -> None:
         raise ValueError("window_seconds must be > 0")
     if config.max_start_staleness_ms is not None and config.max_start_staleness_ms < 0:
         raise ValueError("max_start_staleness_ms must be >= 0 or None")
+    if config.max_observation_gap_ms is not None and config.max_observation_gap_ms < 0:
+        raise ValueError("max_observation_gap_ms must be >= 0 or None")
 
 
 def _clean_ticks(ticks: pl.DataFrame, config: TwapProxyConfig) -> list[tuple[int, float]]:
@@ -57,6 +60,29 @@ def _clean_ticks(ticks: pl.DataFrame, config: TwapProxyConfig) -> list[tuple[int
     return [(int(ts), float(price)) for ts, price in frame.iter_rows()]
 
 
+def _empty_result(
+    target_ns: int,
+    config: TwapProxyConfig,
+    *,
+    start_tick_ns: int | None = None,
+    start_staleness_ms: float | None = None,
+    max_observation_gap_ms: float | None = None,
+    observations: int = 0,
+) -> dict[str, int | float | bool | str | None]:
+    return {
+        config.target_timestamp_col: target_ns,
+        "twap_proxy": None,
+        "window_seconds": config.window_seconds,
+        "source_label": config.source_label,
+        "is_exact_source": False,
+        "complete_window": False,
+        "start_price_timestamp_ns": start_tick_ns,
+        "start_staleness_ms": start_staleness_ms,
+        "max_observation_gap_ms": max_observation_gap_ms,
+        "observations_in_window": observations,
+    }
+
+
 def _twap_one(
     clean_ticks: list[tuple[int, float]],
     target_ns: int,
@@ -76,17 +102,7 @@ def _twap_one(
             high = mid - 1
 
     if start_index < 0:
-        return {
-            config.target_timestamp_col: target_ns,
-            "twap_proxy": None,
-            "window_seconds": config.window_seconds,
-            "source_label": config.source_label,
-            "is_exact_source": False,
-            "complete_window": False,
-            "start_price_timestamp_ns": None,
-            "start_staleness_ms": None,
-            "observations_in_window": 0,
-        }
+        return _empty_result(target_ns, config)
 
     start_tick_ns, current_price = clean_ticks[start_index]
     start_staleness_ms = (start_ns - start_tick_ns) / 1_000_000
@@ -94,21 +110,17 @@ def _twap_one(
         config.max_start_staleness_ms is not None
         and start_staleness_ms > config.max_start_staleness_ms
     ):
-        return {
-            config.target_timestamp_col: target_ns,
-            "twap_proxy": None,
-            "window_seconds": config.window_seconds,
-            "source_label": config.source_label,
-            "is_exact_source": False,
-            "complete_window": False,
-            "start_price_timestamp_ns": start_tick_ns,
-            "start_staleness_ms": start_staleness_ms,
-            "observations_in_window": 0,
-        }
+        return _empty_result(
+            target_ns,
+            config,
+            start_tick_ns=start_tick_ns,
+            start_staleness_ms=start_staleness_ms,
+        )
 
     integral = 0.0
     cursor_ns = start_ns
     observations = 0
+    max_gap_ns = 0
 
     for tick_ns, price in clean_ticks[start_index + 1 :]:
         if tick_ns > target_ns:
@@ -116,13 +128,31 @@ def _twap_one(
         if tick_ns <= start_ns:
             current_price = price
             continue
-        integral += current_price * (tick_ns - cursor_ns)
+        gap_ns = tick_ns - cursor_ns
+        max_gap_ns = max(max_gap_ns, gap_ns)
+        integral += current_price * gap_ns
         cursor_ns = tick_ns
         current_price = price
         observations += 1
 
     if cursor_ns < target_ns:
-        integral += current_price * (target_ns - cursor_ns)
+        gap_ns = target_ns - cursor_ns
+        max_gap_ns = max(max_gap_ns, gap_ns)
+        integral += current_price * gap_ns
+
+    max_gap_ms = max_gap_ns / 1_000_000
+    if (
+        config.max_observation_gap_ms is not None
+        and max_gap_ms > config.max_observation_gap_ms
+    ):
+        return _empty_result(
+            target_ns,
+            config,
+            start_tick_ns=start_tick_ns,
+            start_staleness_ms=start_staleness_ms,
+            max_observation_gap_ms=max_gap_ms,
+            observations=observations,
+        )
 
     twap = integral / window_ns if window_ns > 0 else None
     return {
@@ -134,6 +164,7 @@ def _twap_one(
         "complete_window": True,
         "start_price_timestamp_ns": start_tick_ns,
         "start_staleness_ms": start_staleness_ms,
+        "max_observation_gap_ms": max_gap_ms,
         "observations_in_window": observations,
     }
 
@@ -147,7 +178,7 @@ def build_twap_proxy(
 
     `targets` may be a DataFrame containing `target_timestamp_col` or an iterable
     of Unix-nanosecond timestamps. The output explicitly carries
-    `is_exact_source=False` and `complete_window` provenance.
+    `is_exact_source=False` and window-quality provenance.
     """
 
     config = config or TwapProxyConfig()
@@ -182,6 +213,7 @@ def build_twap_proxy(
                 "complete_window": pl.Boolean,
                 "start_price_timestamp_ns": pl.Int64,
                 "start_staleness_ms": pl.Float64,
+                "max_observation_gap_ms": pl.Float64,
                 "observations_in_window": pl.Int64,
             }
         )
