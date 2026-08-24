@@ -3,7 +3,8 @@ const ENDPOINTS = {
   polymarketGamma: 'https://gamma-api.polymarket.com',
   polymarketClob: 'https://clob.polymarket.com',
   polymarketData: 'https://data-api.polymarket.com',
-  binance: 'https://api.binance.com/api/v3',
+  binance: 'https://data-api.binance.vision/api/v3',
+  binanceUs: 'https://api.binance.us/api/v3',
   coinbaseExchange: 'https://api.exchange.coinbase.com',
 };
 
@@ -39,7 +40,7 @@ export async function testConnections() {
   const tests = [
     ['Kalshi', `${ENDPOINTS.kalshi}/markets?limit=1`],
     ['Polymarket', `${ENDPOINTS.polymarketGamma}/markets?limit=1`],
-    ['Binance', `${ENDPOINTS.binance}/ticker/price?symbol=BTCUSDT`],
+    ['Binance public data', `${ENDPOINTS.binance}/ticker/price?symbol=BTCUSDT`],
     ['Coinbase', `${ENDPOINTS.coinbaseExchange}/products/BTC-USD/ticker`],
   ];
   const results = await Promise.all(tests.map(async ([name, url]) => {
@@ -113,6 +114,9 @@ export const binanceApi = {
   async depth(limit = 100) {
     return fetchJson(`${ENDPOINTS.binance}/depth${qs({ symbol: 'BTCUSDT', limit })}`);
   },
+  async usTicker() {
+    return fetchJson(`${ENDPOINTS.binanceUs}/ticker/price?symbol=BTCUSDT`);
+  },
 };
 
 export const coinbaseApi = {
@@ -133,7 +137,7 @@ export const coinbaseApi = {
 export function websocketEndpoints() {
   return {
     polymarket: 'wss://ws-subscriptions-clob.polymarket.com/ws/market',
-    binance: 'wss://stream.binance.com:9443/ws/btcusdt@aggTrade',
+    binance: 'wss://data-stream.binance.vision:443/ws/btcusdt@aggTrade',
     coinbase: 'wss://advanced-trade-ws.coinbase.com',
     kalshi: 'wss://external-api-ws.kalshi.com/trade-api/ws/v2',
   };
