@@ -58,6 +58,7 @@ def command_lead_lag(args: argparse.Namespace) -> int:
         expiry_col=args.expiry_col,
         max_feature_staleness_ms=args.max_feature_staleness_ms,
         max_forward_delay_ms=args.max_forward_delay_ms,
+        signal_cooldown_ms=args.signal_cooldown_ms,
     )
 
     events = build_lead_lag_events(prediction, btc, config)
@@ -75,9 +76,16 @@ def command_lead_lag(args: argparse.Namespace) -> int:
     summary_output.parent.mkdir(parents=True, exist_ok=True)
     summary.write_parquet(summary_output, compression="zstd")
 
-    print(f"signals: {events.height:,}")
-    print(f"events:  {output}")
-    print(f"summary: {summary_output}")
+    raw_signals = (
+        int(events["raw_qualifying_signal_count"][0])
+        if events.height and "raw_qualifying_signal_count" in events.columns
+        else events.height
+    )
+    print(f"raw qualifying signals: {raw_signals:,}")
+    print(f"de-clustered signals:   {events.height:,}")
+    print(f"signal cooldown:        {config.signal_cooldown_ms:,} ms")
+    print(f"events:                 {output}")
+    print(f"summary:                {summary_output}")
     if summary.height:
         print(summary)
     return 0
@@ -146,6 +154,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-forward-delay-ms",
         type=int,
         help="Optional maximum delay after each target horizon. Later labels are set null.",
+    )
+    lead_lag.add_argument(
+        "--signal-cooldown-ms",
+        type=int,
+        default=0,
+        help=(
+            "Per-contract de-clustering cooldown between kept signals. "
+            "0 keeps every qualifying tick; use e.g. the shock lookback to study distinct episodes."
+        ),
     )
     lead_lag.add_argument("--probability-col", default="yes_mid")
     lead_lag.add_argument("--timestamp-col", default="timestamp_ns")
