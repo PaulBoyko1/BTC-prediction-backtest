@@ -69,11 +69,15 @@ def test_lead_lag_signal_and_forward_labels():
     assert event["btc_move_1s_usd"] == 40.0
     assert event["btc_move_expiry_usd"] == 90.0
     assert event["directional_move_100ms_usd"] > 0
+    assert event["raw_qualifying_signal_count"] == 1
+    assert event["signal_cooldown_ms"] == 0
 
     summary = summarize_lead_lag(events, config.horizons_ms)
     assert summary["horizon"].to_list() == ["100ms", "1s", "expiry"]
     assert summary["signals"].to_list() == [1, 1, 1]
     assert summary["qualifying_signals"].to_list() == [1, 1, 1]
+    assert summary["raw_qualifying_signals"].to_list() == [1, 1, 1]
+    assert summary["unique_contracts"].to_list() == [1, 1, 1]
     assert summary["max_label_delay_ms"].to_list() == [0.0, 0.0, 0.0]
 
 
@@ -197,3 +201,51 @@ def test_invalid_probability_rows_are_removed_before_signal_generation():
     events = build_lead_lag_events(prediction, btc, config)
     assert events.height == 1
     assert events["timestamp_ns"][0] == ns(10)
+
+
+def test_signal_cooldown_declusters_per_contract_and_preserves_other_contracts():
+    prediction = pl.DataFrame(
+        {
+            "timestamp_ns": [
+                ns(0), ns(5), ns(5.2), ns(5.4),
+                ns(0), ns(5.1),
+            ],
+            "contract_id": ["c1", "c1", "c1", "c1", "c2", "c2"],
+            "yes_mid": [0.50, 0.60, 0.61, 0.62, 0.50, 0.60],
+        }
+    )
+    btc = pl.DataFrame(
+        {
+            "timestamp_ns": [ns(0), ns(5), ns(5.1), ns(5.2), ns(5.4), ns(6)],
+            "price": [100_000.0, 100_005.0, 100_005.0, 100_006.0, 100_007.0, 100_010.0],
+        }
+    )
+    raw = LeadLagConfig(
+        lookback_ms=5_000,
+        shock_points=0.08,
+        max_btc_move_usd=20.0,
+        direction="up",
+        horizons_ms=(100,),
+        signal_cooldown_ms=0,
+    )
+    declustered = LeadLagConfig(
+        lookback_ms=5_000,
+        shock_points=0.08,
+        max_btc_move_usd=20.0,
+        direction="up",
+        horizons_ms=(100,),
+        signal_cooldown_ms=1_000,
+    )
+
+    raw_events = build_lead_lag_events(prediction, btc, raw)
+    events = build_lead_lag_events(prediction, btc, declustered)
+    assert raw_events.height == 4
+    assert events.height == 2
+    assert set(events["contract_id"].to_list()) == {"c1", "c2"}
+    assert events["raw_qualifying_signal_count"].to_list() == [4, 4]
+    assert events["signal_cooldown_ms"].to_list() == [1000, 1000]
+
+    summary = summarize_lead_lag(events, declustered.horizons_ms)
+    assert summary["qualifying_signals"][0] == 2
+    assert summary["raw_qualifying_signals"][0] == 4
+    assert summary["unique_contracts"][0] == 2

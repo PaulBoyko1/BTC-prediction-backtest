@@ -1,54 +1,122 @@
-BTC PREDICTION BACKTEST — REMAINING QUESTIONS
-============================================
-Updated after the v0.2 requirements pass on 2026-08-23.
+BTC PREDICTION BACKTEST — QUESTION / ANSWER REGISTER
+===================================================
+Updated 2026-08-23 after the v0.5 logical-consistency audit.
 
-DECISIONS ALREADY RESOLVED
-==========================
+PURPOSE
+=======
 
-These no longer need answers unless you want to change them:
+This file is now a decision register, not just a list of questions.
 
-- Always show separate 1-year, 2-year and 3-year results.
-- Show Kalshi and Polymarket separately, plus a venue-equity difference view.
-- Default fair entry assumption: executable ask.
-- Every full test also runs last-trade and midpoint sensitivity variants.
-- Prominently flag unusually large ask-vs-last/midpoint differences.
-- Re-entry behavior is configurable as an execution parameter.
-- Exit behavior is configurable: expiry, target, target+stop, or time-before-expiry.
-- BTC, prediction-market and settlement-reference factors can be mixed in one strategy.
-- First branch selection only chooses the starting factor; it does not lock factor families.
-- VWAP includes named bullish/bearish/reversal/continuation/support/resistance/breakthrough setups.
-- Prediction-market shock + small-BTC-move (lead/lag test B) is a first-class factor combination.
-- BTC source defaults to Binance + Coinbase composite, switchable to either venue.
-- Prediction source is switchable between Kalshi / Polymarket / both.
-- Settlement-reference data is kept separate from exchange spot.
-- Kalshi and Polymarket may use different settlement references; do not silently substitute BTC spot.
-- Prefer raw source timestamps for lead/lag research, then aggregate later.
-- Portfolio/risk caps are customizable rather than treated as fixed recommendations.
-- Advanced statistics should have plain-English explanations in the UI.
-- Parameter sweep is required.
-- Kalshi ↔ Polymarket discrepancy analysis has its own tab.
-- Test A (price threshold), B (prediction shock while BTC barely moves), C (cross-venue discrepancy), and E (BTC technical combinations) all belong in the system.
+For each item:
+- STATUS says whether your prior requirements actually answered it.
+- YOUR ANSWER (NORMALIZED) translates terse/prior answers into ordinary language without changing their meaning.
+- REPO MEANING says what that answer requires technically.
+- VERIFIED STATE records what is already implemented or what remains genuinely open.
 
-OPEN QUESTIONS — DATA / RESEARCH PRIORITY
-=========================================
+I do NOT invent an answer where no explicit preference was found. Those items say so clearly and retain a recommendation.
+
+
+BASELINE DECISIONS ALREADY ANSWERED
+===================================
+
+YOUR ANSWER (NORMALIZED)
+------------------------
+You want a highly configurable research/backtest system rather than one hard-coded strategy. The system should be able to test prediction-market ideas, BTC ideas, and combinations of both; use realistic execution assumptions; compare Kalshi and Polymarket independently; expose differences rather than hiding them; and preserve enough raw data/timing detail to investigate whether an apparent edge is real.
+
+This translates into the following already-approved requirements:
+
+- Always show separate 1-year, 2-year and 3-year requested windows when real history actually exists.
+- Never fake a full requested window by padding missing prediction-market history with synthetic data.
+- Show Kalshi and Polymarket separately, plus a venue-equity difference visualization.
+- Use executable ask as the default buy assumption.
+- Automatically run last-trade and midpoint sensitivity variants as well.
+- Prominently flag unusually large ask-vs-last/midpoint result differences.
+- Make re-entry behavior configurable.
+- Support hold-to-expiry, price target, target+stop and time-before-expiry exits.
+- Support defined-price cycles such as buy <=45c / sell >=55c.
+- Support repeated low->high cycles inside one contract when re-entry is enabled.
+- Allow BTC, prediction-market and settlement-reference factors to be mixed in the same strategy.
+- Starting from the BTC or Prediction branch must not lock the user into only that factor family.
+- VWAP needs named bullish/bearish/reversal/continuation/support/resistance/breakthrough behavior plus customization.
+- Test B — prediction market moves sharply while BTC itself barely moved — is a first-class research idea.
+- BTC source defaults to an explicit Binance + Coinbase composite and can also be studied by source separately.
+- Kalshi and Polymarket settlement references must remain separate from exchange spot.
+- Preserve native/raw timestamps before optional aggregation.
+- Risk/sizing assumptions are configurable research controls, not fixed recommendations.
+- Advanced statistics need plain-English explanations.
+- Parameter sweeps are required, but a best historical parameter is not automatically an edge.
+- Cross-venue discrepancy analysis stays separate from ordinary strategy testing.
+- Tests A, B, C and E all belong in the system:
+  A = contract-price threshold / price-cycle ideas.
+  B = prediction-market shock while BTC barely moved, then measure BTC response.
+  C = Kalshi <-> Polymarket discrepancy / confirmation.
+  E = BTC technical conditions mapped into prediction-market trades.
+- No automatic real-money order placement is part of the research system.
+
+The v0.5 regression suite now explicitly tests the 45c->55c mean-reversion case and repeated volatility-harvesting cycles, including the important case where an early exit makes money even though the contract ultimately settles against the purchased side. See LOGIC_AUDIT.md.
+
+
+QUESTION REGISTER
+=================
 
 1. EXACT SETTLEMENT-REFERENCE HISTORY
-- For Kalshi BTC15m, what exact historical CF Benchmarks BRTI source/archive will we use if free public tick history is not sufficient?
-- For Polymarket Chainlink BTC/USD Data Streams, what exact historical stream/archive should be used when reconstructing settlement-reference behavior?
-- If exact reference ticks cannot be acquired for an old period, should those tests be omitted entirely (recommended for settlement-specific studies) or shown separately as clearly labeled proxy/reference-unavailable tests?
+-------------------------------------
+STATUS: RESOLVED POLICY / EXACT DATA ACQUISITION STILL OPEN
+
+YOUR ANSWER (NORMALIZED):
+Use the actual venue settlement source whenever the study depends on it. Do not pretend Binance, Coinbase or a composite is BRTI or Chainlink. If exact historical reference data cannot be obtained, either omit the reference-specific test for that period or run a clearly labeled proxy diagnostic. Keep searching for the exact data rather than quietly substituting spot.
+
+REPO MEANING:
+- Kalshi reference-path studies require actual CF Benchmarks BRTI history.
+- Polymarket reference-path studies require the exact Chainlink stream/version named by each contract rule.
+- Outcome-only backtests may use the venue's resolved outcome/final metadata without reconstructing the complete intracontract reference path.
+- Proxy series must carry is_exact_source=false / spot_proxy provenance.
+- Contract rule/source changes must be versioned rather than pooled blindly.
+
+VERIFIED STATE — 2026-08-23:
+- REFERENCE_DATA_RESEARCH.md implements this policy.
+- CME launched BRTI in November 2016 and changed BRTI publication from 1s to 200ms on May 18, 2026. The acquisition path is licensed/entitled rather than a guaranteed free multi-year raw archive.
+- The official Chainlink Data Streams SDK getReportsPage example explicitly says the requested timestamp must be within the last 30 days. Standard credentials therefore do NOT prove 1-3 years of historical Chainlink reports are available.
+- backend/reference_sources.py contains CME DataMine entitlement/download hooks.
+- scripts/chainlink-reference.mjs contains credentialed Chainlink retrieval hooks.
+- backend/twap_proxy.py now builds a reconstructed Binance/Coinbase/composite time-weighted proxy, but deliberately labels it non-exact.
+
+CURRENT EXTERNAL CHECKS:
+- CME BRTI publication-frequency change: https://www.cmegroup.com/notices/electronic-trading/2026/05/20260518.html
+- Chainlink SDK example: https://github.com/smartcontractkit/data-streams-sdk/blob/main/typescript/examples/get-reports-page.ts
+
+REMAINING REAL QUESTION:
+Which licensed/authorized archive will actually be purchased or obtained for old exact BRTI / Chainlink path reconstruction? That cannot be answered honestly until the data entitlement/archive is available.
+
 
 2. FIRST REAL HISTORICAL INGESTION
-Recommended order:
-A. Kalshi BTC 15m contract metadata + trades + outcomes.
-B. Binance and Coinbase raw BTC trades/quotes for the same timestamps.
-C. Polymarket equivalent BTC markets for discrepancy/confirmation.
-D. Exact settlement-reference archives where obtainable.
-E. Historical order-book depth.
+----------------------------------
+STATUS: RESOLVED
 
-Do you want to preserve this order, or prioritize Polymarket equally from day one even if it makes the first ingestion pass slower/more complex?
+YOUR ANSWER (NORMALIZED):
+Start with Kalshi BTC 15-minute contracts and align them to Binance and Coinbase BTC data. Get that baseline working correctly first, then add matching Polymarket BTC contracts immediately afterward. Do not make the first pipeline unnecessarily complicated by forcing both prediction venues into one schema before the Kalshi baseline works.
+
+REPO MEANING:
+A. Kalshi BTC15m metadata, trades, resolutions/outcomes.
+B. Binance + Coinbase raw BTC data for matching timestamps.
+C. Polymarket equivalent/related BTC contracts with their own rule/source metadata.
+D. Exact settlement-reference history where obtainable.
+E. Historical L2 depth after first-stage signal studies justify the cost.
+
+VERIFIED STATE:
+- This is already recorded in DECISIONS.md.
+- Public/read-only adapters and ingest commands exist for Kalshi, Binance, Coinbase and Polymarket.
+- Real normalized multi-month/multi-year prediction-market Parquet is still the major missing dataset.
+
 
 3. LEAD/LAG OUTPUT HORIZONS
-Current proposed standard outputs for test B:
+---------------------------
+STATUS: RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Keep all the horizons. The point is to find out whether any relationship is sub-second, a few seconds, several minutes, or only relevant through contract expiry rather than choosing one horizon in advance.
+
+APPROVED STANDARD OUTPUTS:
 - 100 ms
 - 250 ms
 - 500 ms
@@ -57,61 +125,151 @@ Current proposed standard outputs for test B:
 - 5 s
 - 10 s
 - 30 s
-- 1 m
-- 3 m
-- 5 m
+- 1 min
+- 3 min
+- 5 min
 - contract expiry
 
-Keep all of these?
+VERIFIED STATE:
+backend/lead_lag.py implements these standard horizons, backward-only signal features, forward-only labels, feature-staleness checks, forward-label-delay checks and optional per-contract signal de-clustering.
+
 
 4. BTC PERPETUAL / DERIVATIVES DATA
-Should the BTC factor engine also ingest:
-- perpetual futures price
-- basis
+-----------------------------------
+STATUS: RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Yes. Include perpetual-futures information because prediction-market traders may simply be reacting to derivatives information that appears before spot. Do not assume Kalshi or Polymarket is the original source of the move.
+
+INCLUDE WHERE OBTAINABLE:
+- perpetual price
+- spot/perp basis
 - funding
 - open interest
-- liquidation flow
+- liquidations
 - perp order-book imbalance
 
-This could matter if Kalshi traders are reacting to derivatives information before spot.
+REPO MEANING:
+These are explanatory/candidate signal variables, not evidence that the prediction market leads BTC by itself.
 
-OPEN QUESTIONS — EXECUTION REALISM
-==================================
+VERIFIED STATE:
+The requirement is recorded in DECISIONS.md and STATUS.md, but this derivatives ingestion layer is not yet implemented.
+
 
 5. HISTORICAL FEE SCHEDULES
-Do you want exact venue fee schedules versioned by date once real backtests begin? Recommendation: yes.
+---------------------------
+STATUS: RESOLVED PRINCIPLE
+
+YOUR ANSWER (NORMALIZED):
+Yes. A strategy should be judged after real fees, spread, slippage and other execution costs. If a venue changed its fees, the historical backtest should use the fee structure that actually applied at that time instead of one modern fixed estimate.
+
+WHY THIS IS NOW MANDATORY, NOT OPTIONAL:
+- Kalshi states that fees can differ across markets and that some markets have maker fees.
+- Polymarket now has fee-enabled market categories, market-level feesEnabled state and activation timing. Current crypto taker fees use a nonlinear probability-dependent formula rather than a constant cents/share assumption.
+
+CURRENT POLYMARKET FORMULA (verified 2026-08-23):
+fee = shares * feeRate * p * (1 - p)
+Current Help Center lists crypto taker feeRate = 0.07, maker fee = 0, with fee applicability determined by the market/category/deployment regime. Those values can change, so they must be captured from the market/fee regime rather than hard-coded forever.
+
+REPO MEANING:
+Production normalized contracts/trades should store fee-regime/version metadata. The current fixed entryFeeCents/exitFeeCents browser controls remain sensitivity allowances only.
+
+VERIFIED SOURCES:
+- https://help.kalshi.com/en/articles/13823805-fees
+- https://help.polymarket.com/en/articles/13364478-trading-fees
+- https://help.polymarket.com/en/articles/13364471-maker-rebates-program
+
 
 6. MAKER MODEL
-Should v1.0 include maker-entry simulation in addition to taker/ask execution?
-If yes, preferred model:
-- simple "limit touched = fill" (easy but optimistic)
-- queue-aware estimate
-- depth/order-flow based probabilistic fill
-Recommendation: do not call a maker result realistic until queue/adverse-selection effects are addressed.
+--------------
+STATUS: PARTIALLY RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Do not spend the first stage building a complicated maker simulation. First find ideas that survive conservative executable/taker assumptions. If an idea survives, then investigate whether maker execution improves it realistically.
+
+WHAT YOU HAVE NOT YET EXPLICITLY CHOSEN:
+You have not selected one exact maker-fill algorithm.
+
+REPO-SPECIFIC RECOMMENDATION:
+When this is built, do NOT use "limit touched = filled" as the serious result. That is too optimistic for high-frequency work. Prefer a queue/depth/order-flow model that can represent:
+- queue position;
+- displayed depth ahead;
+- partial fills;
+- order cancellation/replacement;
+- adverse selection after fill;
+- maker fees/rebates by venue/regime.
+
+WHY:
+A prediction market can touch a price without enough opposing flow to fill our order. Treating every touch as a fill creates artificial edge.
+
+VERIFIED STATE:
+The repo intentionally has no realistic maker result yet. v0.5 still treats taker/ask execution as the credible first-stage assumption.
+
 
 7. PARTIAL FILLS
-When historical L2 depth exists, should position size be capped to actual historical displayed liquidity and partially filled across levels? Recommendation: yes for high-frequency/large-size studies.
+----------------
+STATUS: PARTIALLY RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Real execution and recorded fills matter, but detailed L2/partial-fill reconstruction should come after a strategy survives the cheaper first-stage test.
+
+WHAT IS STILL NOT EXPLICITLY DECIDED:
+You did not give a precise minimum size threshold at which depth-based partial fills become mandatory.
+
+REPO-SPECIFIC RECOMMENDATION:
+Once L2 is used, cap fills to actually available historical liquidity and walk through successive levels when size exceeds top-of-book depth. Do not let a $100,000 simulated order fill completely at a 45c ask merely because one share was displayed there.
+
+VERIFIED STATE:
+Not implemented yet; correctly listed as future L2 work in LOGIC_AUDIT.md.
+
 
 8. SLIPPAGE MODE
-Currently the UI accepts fixed cents/share. Add selectable modes?
-- fixed cents
-- % of bid/ask spread
-- depth-based walk through book
-- all of the above
-Recommendation: all.
+----------------
+STATUS: PARTIALLY RESOLVED
 
-OPEN QUESTIONS — BTC FACTOR DEFINITIONS
-=======================================
+YOUR ANSWER (NORMALIZED):
+Slippage must be included in expectancy. You did not choose one single slippage formula because the system should be able to test different execution assumptions.
 
-9. DAILY/WEEKLY SESSION DEFINITIONS
-For yesterday high/low/close and prior-week statistics, support:
-- UTC day/week
-- New York day/week
-- rolling 24h / 7d
-Recommendation: configurable, UTC default.
+REPO-SPECIFIC RECOMMENDATION:
+Support all three as separate modes:
+1. fixed cents/share — simple sensitivity test;
+2. fraction/multiple of bid-ask spread — useful when L2 is unavailable;
+3. depth-based book walk — preferred when historical L2 exists.
+
+Also keep ask/last/midpoint as separate observation/fill sensitivity tests; midpoint and last are not substitutes for slippage modeling.
+
+VERIFIED STATE:
+Fixed cents/share exists now. Spread/depth-based modes remain open implementation work.
+
+
+9. DAILY / WEEKLY SESSION DEFINITIONS
+-------------------------------------
+STATUS: GENUINELY UNANSWERED
+
+YOUR ANSWER (NORMALIZED):
+No explicit final session convention was found in your prior answers.
+
+CURRENT REPO:
+- VWAP catalog currently exposes UTC day plus rolling 1h/4h/24h.
+- Prior-day/prior-week demo fields exist.
+- Arbitrary raw-bar session recomputation is not production-complete yet.
+
+RECOMMENDATION:
+Make the definition configurable and explicit:
+- UTC calendar day/week;
+- New York calendar day/week;
+- rolling 24h / 7d.
+Use UTC as the default for crypto because the market is 24/7 and this avoids silently importing an equity-market convention. Store the chosen session definition in each strategy definition so results are reproducible.
+
 
 10. MORE TECHNICAL FACTORS
-Which should be added next?
+--------------------------
+STATUS: PARTIALLY RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Yes, you want a broad, highly configurable factor library rather than only one or two indicators. You have repeatedly emphasized testing many sensible cases and combinations. You did not specify one strict implementation order for every indicator below.
+
+CANDIDATE LIBRARY:
 - RSI
 - MACD
 - ATR
@@ -125,106 +283,297 @@ Which should be added next?
 - Fibonacci levels
 - order-flow imbalance
 
-11. VWAP CONFIRMATION
-The UI already exposes a confirmation-bars field in the VWAP setup catalog. Production implementation still needs an exact definition:
-- number of consecutive bars remaining above/below VWAP
-- close-only confirmations
-- intrabar touch/reclaim logic
-Which behavior do you prefer? Recommendation: close-only bars by selected timeframe, with 0/1/2/3 selectable.
+REPO-SPECIFIC PRIORITY:
+Do not add dozens of cosmetic UI controls before the raw-data feature engine can actually honor them. Recommended order by relevance to the current hypotheses:
+1. order-flow imbalance / depth features;
+2. anchored/session VWAP;
+3. ATR / realized-vol normalization;
+4. support/resistance / prior-level structure;
+5. RSI/MACD/Bollinger as slower confirmation features;
+6. more discretionary-style profile/Fibonacci features later.
 
-OPEN QUESTIONS — OPTIONS / PROBABILITY MODELS
-=============================================
+VERIFIED STATE:
+Current core BTC factors are VWAP, EMA, prior day/week, momentum, realized vol, round levels and BTC move gates. LOGIC_AUDIT.md explicitly guards parameters that are still demo/precomputed rather than raw-recomputed.
+
+
+11. VWAP CONFIRMATION
+---------------------
+STATUS: PARTIALLY RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+You want VWAP behavior to be customizable and to distinguish bullish bias, reversal, continuation, support/resistance and breakthrough. You did not give an exact mathematical definition for the existing confirmationBars field.
+
+REPO-SPECIFIC RECOMMENDATION:
+Use close-only confirmation as the default because it is deterministic and much easier to backtest without intrabar ambiguity:
+- 0 = no extra confirmation;
+- 1/2/3... = that many completed selected-timeframe bars closing on the required side of VWAP.
+
+Treat intrabar touch/reclaim as a separate named setup instead of mixing it into the same confirmationBars parameter. That prevents one parameter from meaning two different things.
+
+VERIFIED STATE:
+confirmationBars exists in the catalog but v0.5 explicitly warns that arbitrary confirmation/session recomputation is not production-active yet.
+
 
 12. OPTIONS DATA PROVIDER
-To compare prediction prices against option-implied probabilities, which source should be primary?
-- Deribit
-- Binance options where available
-- both
-Recommendation: Deribit primary + secondary cross-check where possible.
+-------------------------
+STATUS: RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Use Deribit as the primary BTC/ETH options source. Use another venue only as a secondary cross-check/fallback where useful rather than designing the probability model around a weaker source.
+
+WHY THIS FITS THE REPO:
+The options layer is meant to compare prediction-market prices against option-implied digital probabilities, IV/skew and terminal-distribution information. Deribit is directly suited to that use case.
+
+VERIFIED 2026-08-23:
+Deribit's public API supports `kind=option`, BTC and ETH instruments, strikes, option type, expiration, settlement information and instrument-level commissions without requiring authentication for ordinary public market-data calls.
+
+OFFICIAL DOCS:
+- https://docs.deribit.com/api-reference/market-data/public-get_instruments
+- https://docs.deribit.com/api-reference/market-data/public-get_instrument
+
+VERIFIED STATE:
+Deribit ingestion/options surface is not implemented in this repo yet. This question should no longer block the provider decision.
+
 
 13. ADVANCED PROBABILITY MODELS
-Add all of these when options/reference data exists?
-- Black-Scholes/digital N(d2) reference
-- implied volatility
-- skew/smile interpolation
-- call-spread implied binary probability
-- option-implied terminal distribution
-- Greeks
-- realized-vol distribution
-- empirical conditional probability
-- calibrated machine-learning probability
-Recommendation: yes, but keep them in an Advanced section and clearly distinguish risk-neutral probabilities from real-world forecasts.
+-------------------------------
+STATUS: RESOLVED PRINCIPLE / STAGED IMPLEMENTATION
 
-OPEN QUESTIONS — VALIDATION / ANTI-OVERFITTING
-==============================================
+YOUR ANSWER (NORMALIZED):
+Yes, include advanced probability methods, but keep them understandable and distinguish what each probability means. Start with explainable baselines, calibrate them, then compare more complex models instead of jumping straight to a black box.
+
+APPROVED MODEL FAMILY:
+- Black-Scholes / digital N(d2) reference;
+- implied volatility;
+- skew/smile interpolation;
+- call-spread implied binary probability;
+- option-implied terminal distribution;
+- Greeks;
+- realized-vol empirical distribution;
+- empirical conditional probability from historical features;
+- calibrated machine-learning probability later.
+
+IMPORTANT INTERPRETATION RULE:
+Option-implied/digital prices are risk-neutral probabilities, not automatically real-world event probabilities. They must be labeled separately from empirical/calibrated forecast probabilities.
+
+MODEL ORDER RECOMMENDATION CONSISTENT WITH YOUR REQUIREMENTS:
+1. market probability baseline;
+2. digital N(d2) / call-spread option probability;
+3. IV/skew-aware distribution;
+4. empirical conditional model;
+5. calibrated boosted-tree/ML model only after simple baselines are measured.
+
+VERIFIED STATE:
+The browser already contains a basic digital N(d2) diagnostic. Full options-surface ingestion and calibration are not built yet.
+
 
 14. WALK-FORWARD DEFAULT
-Which should be the default serious-validation mode after exploratory sweeps?
-- expanding-window walk-forward
-- rolling-window walk-forward
-- fixed train/validation/test
-Recommendation: expanding-window plus a final untouched lockbox.
+------------------------
+STATUS: PARTIALLY RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Serious validation must be walk-forward/out-of-sample rather than fitting one static historical period. You favor rolling/expanding validation, with purging/embargo where overlapping labels can leak information, and a final untouched test segment.
+
+WHAT IS NOT FULLY FIXED YET:
+You have not explicitly chosen "expanding" versus "rolling" as the one universal default for every strategy.
+
+REPO-SPECIFIC RECOMMENDATION:
+Default to expanding-window walk-forward for the first formal implementation plus a final untouched lockbox. Also expose rolling-window mode because high-frequency prediction-market relationships can decay/regime-shift quickly.
+
+For overlapping horizons/contracts, implement purging/embargo before trusting OOS statistics.
+
+VERIFIED STATE:
+Required by DECISIONS.md / LOGIC_AUDIT.md, but orchestration is not yet implemented.
+
 
 15. MULTIPLE-TESTING CONTROL
-Parameter sweeps can manufacture false winners. Should the research report include:
-- number of variants tested
-- false-discovery-rate adjustment
-- Deflated Sharpe / Probability of Backtest Overfitting-style diagnostics
-- bootstrap reality check
-Recommendation: yes where sample size supports it.
+----------------------------
+STATUS: RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Yes. The app is supposed to search many parameter combinations, so it must also measure how much searching was done. A strategy should not be called strong just because it is the best-looking result out of hundreds or thousands of attempts.
+
+REQUIRE:
+- total variants/hypotheses tested;
+- parameter-stability surface, not just best point;
+- bootstrap/permutation/reality-check style testing where applicable;
+- false-discovery controls when comparing many hypotheses;
+- Deflated-Sharpe / Probability-of-Backtest-Overfitting-style diagnostics where statistically appropriate.
+
+VERIFIED STATE:
+Parameter sweep exists. Multiple-testing correction does not yet; it remains required before automated edge discovery can produce a credible "winner."
+
 
 16. REGIME BREAKDOWNS
-Automatically report strategy results by:
-- bull / bear / sideways BTC regime
-- realized-volatility regime
-- hour of day
-- day of week
-- liquidity regime
-- contract-price bucket
-- time-to-expiry bucket
-Recommendation: yes.
+---------------------
+STATUS: RESOLVED
+
+YOUR ANSWER (NORMALIZED):
+Yes. Do not trust a result that only works because one market regime dominated the sample. Break performance down so we can see whether the relationship survives different environments.
+
+REQUIRE WHERE SAMPLE SIZE SUPPORTS IT:
+- bull / bear / sideways BTC regime;
+- realized-volatility regime;
+- hour of day;
+- day of week;
+- liquidity/spread regime;
+- contract-price/probability bucket;
+- time-to-expiry bucket;
+- venue / rule-version / fee-regime split;
+- source-quality/timestamp-quality tier where relevant.
+
+VERIFIED STATE:
+The concept is required in DECISIONS.md but automated regime reports are not yet implemented.
+
 
 17. MINIMUM EVIDENCE RULE
-Should the UI visibly mark strategies as "insufficient evidence" until they exceed minimum thresholds such as trade count, confidence interval width, and out-of-sample observations? Recommendation: yes.
+-------------------------
+STATUS: RESOLVED PRINCIPLE / NUMERIC THRESHOLDS OPEN
 
-OPEN QUESTIONS — APP / STORAGE
-==============================
+YOUR ANSWER (NORMALIZED):
+Yes. The system should be able to say "insufficient evidence" or "no trade" instead of forcing a bullish/bearish strategy conclusion from a tiny or unstable sample.
+
+MINIMUM-EVIDENCE FAMILY SHOULD INCLUDE:
+- trade/event count;
+- number of distinct contracts / de-clustered signal episodes;
+- confidence-interval width;
+- valid OOS observations;
+- execution-data quality;
+- drawdown / tail behavior;
+- parameter stability;
+- regime coverage.
+
+IMPORTANT v0.5 IMPROVEMENT:
+Test-B summaries now distinguish raw qualifying ticks from de-clustered signals and unique contracts. That is necessary before a minimum-sample rule can be statistically meaningful.
+
+WHAT REMAINS OPEN:
+Exact numeric cutoffs should be calibrated by hypothesis/horizon rather than choosing one arbitrary universal number now.
+
 
 18. REAL DATA BACKEND
-For multi-year tick data, preferred local backend:
-- Python + Polars + DuckDB + Parquet (recommended)
-- Node backend
-- another stack
+---------------------
+STATUS: RESOLVED AND IMPLEMENTED AS PROJECT ARCHITECTURE
 
-The browser UI should not directly process hundreds of millions of events.
+YOUR ANSWER (NORMALIZED):
+Use Python for the heavy historical research. Use Polars + DuckDB + Parquet for large timestamped datasets, and keep the JavaScript/browser app as the strategy-builder and visualization layer.
+
+VERIFIED STATE:
+- pyproject.toml defines the Python research stack.
+- backend/ contains the lead/lag, reference-source and TWAP-proxy research code.
+- the browser is not expected to process hundreds of millions of raw events directly.
+
+This question should no longer appear as open.
+
 
 19. SAVED STRATEGIES
-Add named presets stored in:
-- browser LocalStorage first
-- JSON files in repo
-- backend database
-Recommendation: LocalStorage + JSON export initially.
+--------------------
+STATUS: GENUINELY UNANSWERED
+
+YOUR ANSWER (NORMALIZED):
+No explicit storage preference was recovered for saved named strategies.
+
+REPO-SPECIFIC RECOMMENDATION:
+Stage 1:
+- browser LocalStorage for convenience;
+- JSON export/import for portability and reproducibility.
+
+Stage 2:
+- backend/database catalog once real research runs need immutable strategy IDs, dataset hashes, train/test windows and result lineage.
+
+Do not store only UI state; a serious saved strategy must include every parameter and data/execution assumption needed to reproduce it.
+
 
 20. EXPORTS
-Which should be first-class?
-- CSV trade ledger
-- JSON strategy definition
-- CSV parameter-sweep table
-- PNG chart
-- PDF research report
-Recommendation: CSV + JSON first, PDF later.
+-----------
+STATUS: GENUINELY UNANSWERED
+
+YOUR ANSWER (NORMALIZED):
+No explicit final export-format priority was found.
+
+REPO-SPECIFIC RECOMMENDATION:
+First-class initial exports:
+1. JSON strategy definition + data/execution metadata;
+2. CSV/Parquet trade/event ledger;
+3. CSV/Parquet parameter-sweep table.
+
+Later presentation exports:
+4. PNG chart;
+5. PDF research report.
+
+Reason: reproducible machine-readable outputs matter more than presentation files during research.
+
 
 21. STRATEGY COMPARISON
-Add a tab to compare multiple saved strategies side by side/overlaid, including out-of-sample performance? Recommendation: yes.
+-----------------------
+STATUS: PARTIALLY ANSWERED
+
+YOUR ANSWER (NORMALIZED):
+You clearly want comparisons across venues, 1y/2y/3y windows, assumptions and parameter cases. You have not explicitly said how a multi-saved-strategy comparison screen itself should be laid out.
+
+REPO-SPECIFIC RECOMMENDATION:
+Yes, add a strategy-comparison surface after saved strategy definitions exist. Compare, at minimum:
+- OOS return/expectancy;
+- trade/de-clustered event count;
+- drawdown;
+- fill sensitivity;
+- regime stability;
+- parameter stability;
+- venue dependence;
+- correlation/overlap between strategy signals.
+
+Do not rank strategies only by total historical return.
+
 
 22. REAL-TIME MODE LATER
-After the research system is validated, should there eventually be a read-only live "signal monitor" that shows what current conditions would trigger, without placing trades? This is intentionally separate from the backtester and no order-placement code exists now.
+------------------------
+STATUS: PARTIALLY RESOLVED / NOT A CURRENT PRIORITY
 
-KNOWN IMPLEMENTATION ITEMS (NOT QUESTIONS)
-==========================================
+YOUR ANSWER (NORMALIZED):
+Do not turn this research repo into automatic real-money execution. A later read-only current-signal monitor is consistent with the project, but research/backtest validity comes first.
 
-- Exact configurable lookbacks (for example +8¢ in exactly 5 seconds, BTC move in exactly 5 seconds) need to be calculated from timestamp-indexed real history; the current demo rows use representative synthetic derived values.
-- Historical reference-price charts must only appear when exact matching reference data exists; otherwise they should be labeled unavailable/proxy and excluded from settlement-specific conclusions.
-- The venue-equity difference chart is a visualization; performance/edge metrics are always computed independently on each venue.
-- Ask is the canonical primary fill assumption. Last trade and midpoint are sensitivity variants, not guaranteed executable fills.
-- The synthetic demo contains a deliberately mild lead/lag pattern only to exercise UI logic. It must never be treated as evidence.
+REPO MEANING:
+A future monitor may show:
+- current factor states;
+- which saved strategy conditions are satisfied;
+- current executable prediction-market prices;
+- current reference/proxy data quality;
+- hypothetical entry/exit state.
+
+It should remain separate from the backtester and must not quietly introduce order-placement credentials/code.
+
+VERIFIED STATE:
+The current project contains no order-placement code.
+
+
+QUESTIONS THAT STILL REQUIRE A REAL USER CHOICE
+===============================================
+
+After recovering the prior answers, only a small set remain genuinely unresolved rather than merely stale in the old QUESTIONS.txt:
+
+A. Exact old BRTI/Chainlink archive/provider/entitlement once we decide to obtain licensed historical reference-path data.
+B. One universal daily/weekly session default beyond the recommended UTC default, if you want to override it.
+C. Exact VWAP confirmation semantics if you do not want the recommended close-only default.
+D. Exact maker queue/fill model after a taker-based strategy survives first-stage testing.
+E. Exact numeric minimum-evidence thresholds after real sample sizes are known.
+F. Saved-strategy persistence choice.
+G. Export-format priority.
+H. Detailed saved-strategy comparison UI.
+
+These should stay open until you actually answer them or real data makes the choice obvious.
+
+
+KNOWN IMPLEMENTATION ITEMS — NOT USER QUESTIONS
+===============================================
+
+- Real-history coverage must show actual first/last timestamps and N/A when a requested 1y/2y/3y window does not exist.
+- Exact configurable lookbacks must be calculated from timestamp-indexed history; do not approximate +8c/5s with an arbitrary prior row.
+- Historical reference-price charts only qualify as exact when the exact matching reference source exists.
+- Ask is the canonical first-stage executable fill. Last and midpoint are sensitivity variants, not guaranteed executable fills.
+- A maker touch is not automatically a fill.
+- L2 size must eventually constrain large simulated fills.
+- Synthetic demo profitability is never evidence of a real edge.
+- Test-B repeated ticks must not be treated as independent evidence without de-clustering / dependence controls.
+- Early-exit strategies must be evaluated from their realized payoff distribution rather than settlement win rate alone.
+- Fee regimes must be versioned by market/date once real historical execution backtests begin.
+- Polymarket YES/NO books may be explicit separate outcome-token books; do not force NO execution from 1-YES when an actual NO book is available.
+- Settlement-rule text/source must be preserved per contract; normalized threshold geometry must not erase differences between Kalshi Target Price rules and Polymarket beginning-reference/TWAP rules.

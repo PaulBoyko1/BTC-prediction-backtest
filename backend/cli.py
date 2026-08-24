@@ -12,6 +12,7 @@ import polars as pl
 from .config import FORWARD_HORIZONS_MS
 from .lead_lag import LeadLagConfig, build_lead_lag_events, summarize_lead_lag
 from .reference_sources import CMEDataMineClient, CMEDataMineCredentials
+from .twap_proxy import TwapProxyConfig, build_twap_proxy
 
 
 def _parse_horizons(text: str) -> tuple[int, ...]:
@@ -58,6 +59,7 @@ def command_lead_lag(args: argparse.Namespace) -> int:
         expiry_col=args.expiry_col,
         max_feature_staleness_ms=args.max_feature_staleness_ms,
         max_forward_delay_ms=args.max_forward_delay_ms,
+        signal_cooldown_ms=args.signal_cooldown_ms,
     )
 
     events = build_lead_lag_events(prediction, btc, config)
@@ -75,11 +77,44 @@ def command_lead_lag(args: argparse.Namespace) -> int:
     summary_output.parent.mkdir(parents=True, exist_ok=True)
     summary.write_parquet(summary_output, compression="zstd")
 
-    print(f"signals: {events.height:,}")
-    print(f"events:  {output}")
-    print(f"summary: {summary_output}")
+    raw_signals = (
+        int(events["raw_qualifying_signal_count"][0])
+        if events.height and "raw_qualifying_signal_count" in events.columns
+        else events.height
+    )
+    print(f"raw qualifying signals: {raw_signals:,}")
+    print(f"de-clustered signals:   {events.height:,}")
+    print(f"signal cooldown:        {config.signal_cooldown_ms:,} ms")
+    print(f"events:                 {output}")
+    print(f"summary:                {summary_output}")
     if summary.height:
         print(summary)
+    return 0
+
+
+def command_twap_proxy(args: argparse.Namespace) -> int:
+    btc = _read_parquet(args.btc)
+    targets = _read_parquet(args.targets)
+    config = TwapProxyConfig(
+        window_seconds=args.window_seconds,
+        timestamp_col=args.timestamp_col,
+        price_col=args.price_col,
+        target_timestamp_col=args.target_timestamp_col,
+        source_label=args.source_label,
+        max_start_staleness_ms=args.max_start_staleness_ms,
+        max_observation_gap_ms=args.max_observation_gap_ms,
+    )
+    result = build_twap_proxy(btc, targets, config)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result.write_parquet(output, compression="zstd")
+    complete = int(result.filter(pl.col("complete_window")).height) if result.height else 0
+    print(f"targets:          {result.height:,}")
+    print(f"complete windows: {complete:,}")
+    print(f"window:           {config.window_seconds}s")
+    print(f"source label:     {config.source_label}")
+    print("classification:   reconstructed spot_proxy (NOT exact Chainlink)")
+    print(f"output:           {output}")
     return 0
 
 
@@ -147,12 +182,49 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Optional maximum delay after each target horizon. Later labels are set null.",
     )
+    lead_lag.add_argument(
+        "--signal-cooldown-ms",
+        type=int,
+        default=0,
+        help=(
+            "Per-contract de-clustering cooldown between kept signals. "
+            "0 keeps every qualifying tick; use e.g. the shock lookback to study distinct episodes."
+        ),
+    )
     lead_lag.add_argument("--probability-col", default="yes_mid")
     lead_lag.add_argument("--timestamp-col", default="timestamp_ns")
     lead_lag.add_argument("--contract-col", default="contract_id")
     lead_lag.add_argument("--btc-price-col", default="price")
     lead_lag.add_argument("--expiry-col", default="expiry_ns")
     lead_lag.set_defaults(func=command_lead_lag)
+
+    twap = subparsers.add_parser(
+        "twap-proxy",
+        help="Build a reconstructed BTC TWAP proxy from irregular spot ticks",
+    )
+    twap.add_argument("--btc", required=True, help="BTC tick Parquet")
+    twap.add_argument("--targets", required=True, help="Target timestamp Parquet")
+    twap.add_argument("--output", required=True, help="Output TWAP proxy Parquet")
+    twap.add_argument("--window-seconds", type=int, default=60)
+    twap.add_argument("--timestamp-col", default="timestamp_ns")
+    twap.add_argument("--price-col", default="price")
+    twap.add_argument("--target-timestamp-col", default="timestamp_ns")
+    twap.add_argument(
+        "--source-label",
+        default="btc_spot_proxy",
+        help="Explicit provenance such as binance, coinbase, or binance_coinbase_composite",
+    )
+    twap.add_argument(
+        "--max-start-staleness-ms",
+        type=int,
+        help="Optional maximum age of the carried-forward price at the window start.",
+    )
+    twap.add_argument(
+        "--max-observation-gap-ms",
+        type=int,
+        help="Optional maximum gap between observations inside a proxy window.",
+    )
+    twap.set_defaults(func=command_twap_proxy)
 
     cme_list = subparsers.add_parser(
         "cme-list",

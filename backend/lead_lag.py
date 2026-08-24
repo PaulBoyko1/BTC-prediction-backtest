@@ -11,6 +11,10 @@ forward labels use forward-only joins, which makes the lookahead boundary
 explicit and auditable. The engine also records how stale each joined feature
 or forward label actually is so sparse data cannot masquerade as sub-second
 precision.
+
+Qualifying ticks can be de-clustered per contract with `signal_cooldown_ms`.
+This prevents one persistent repricing episode from being counted as dozens of
+nominally separate events when the research question is about distinct shocks.
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ class LeadLagConfig:
     expiry_col: str = "expiry_ns"
     max_feature_staleness_ms: int | None = None
     max_forward_delay_ms: int | None = None
+    signal_cooldown_ms: int = 0
 
 
 def _require_columns(frame: pl.DataFrame, columns: Iterable[str], label: str) -> None:
@@ -68,6 +73,8 @@ def _validate_config(config: LeadLagConfig) -> None:
         raise ValueError("max_feature_staleness_ms must be >= 0 or None")
     if config.max_forward_delay_ms is not None and config.max_forward_delay_ms < 0:
         raise ValueError("max_forward_delay_ms must be >= 0 or None")
+    if config.signal_cooldown_ms < 0:
+        raise ValueError("signal_cooldown_ms must be >= 0")
 
 
 def _prediction_lag_features(
@@ -211,6 +218,41 @@ def _signal_expression(config: LeadLagConfig) -> pl.Expr:
             & (pl.col("btc_now_age_ms") <= max_age)
         )
     return condition
+
+
+def _decluster_signals(signals: pl.DataFrame, config: LeadLagConfig) -> pl.DataFrame:
+    """Keep the first qualifying tick, then enforce a per-contract cooldown.
+
+    The cooldown is measured from the last *kept* signal, not merely the previous
+    raw qualifying tick. A value of zero preserves every qualifying observation.
+    This is deliberately explicit because raw-event and de-clustered studies answer
+    different questions and should both remain possible.
+    """
+
+    if config.signal_cooldown_ms <= 0 or signals.height <= 1:
+        return signals.sort(config.timestamp_col)
+
+    ts = config.timestamp_col
+    contract = config.contract_col
+    cooldown_ns = int(config.signal_cooldown_ms * 1_000_000)
+    indexed = signals.sort([contract, ts]).with_row_index("_decluster_row_id")
+    keep_ids: list[int] = []
+    last_kept: dict[object, int] = {}
+
+    for row_id, contract_id, timestamp_ns in indexed.select(
+        "_decluster_row_id", contract, ts
+    ).iter_rows():
+        timestamp = int(timestamp_ns)
+        previous = last_kept.get(contract_id)
+        if previous is None or timestamp - previous >= cooldown_ns:
+            keep_ids.append(int(row_id))
+            last_kept[contract_id] = timestamp
+
+    return (
+        indexed.filter(pl.col("_decluster_row_id").is_in(keep_ids))
+        .drop("_decluster_row_id")
+        .sort(ts)
+    )
 
 
 def _attach_forward_btc(
@@ -388,7 +430,13 @@ def build_lead_lag_events(
 
     featured = _prediction_lag_features(pred, config=config)
     featured = _btc_lag_features(featured, btc_clean, config=config)
-    signals = featured.filter(_signal_expression(config))
+    raw_signals = featured.filter(_signal_expression(config))
+    raw_signal_count = raw_signals.height
+    signals = _decluster_signals(raw_signals, config)
+    signals = signals.with_columns(
+        pl.lit(raw_signal_count).cast(pl.Int64).alias("raw_qualifying_signal_count"),
+        pl.lit(config.signal_cooldown_ms).cast(pl.Int64).alias("signal_cooldown_ms"),
+    )
 
     for horizon_ms in config.horizons_ms:
         signals = _attach_forward_btc(
@@ -409,14 +457,24 @@ def summarize_lead_lag(
 ) -> pl.DataFrame:
     """Create a compact horizon-by-horizon diagnostic table.
 
-    `signals` is the number of events with a valid label for that horizon;
-    `qualifying_signals` is the total number of events before label availability
-    is considered. This prevents end-of-file or sparse-data nulls from inflating
-    the apparent sample size.
+    `signals` is the number of de-clustered events with a valid label for that
+    horizon; `qualifying_signals` is the de-clustered event count before label
+    availability; `raw_qualifying_signals` is the count before optional signal
+    cooldown. This makes dependence from repeated ticks visible.
     """
 
     rows: list[dict[str, float | int | str | None]] = []
     total_signals = events.height
+    raw_total = (
+        int(events["raw_qualifying_signal_count"][0])
+        if total_signals and "raw_qualifying_signal_count" in events.columns
+        else total_signals
+    )
+    unique_contracts = (
+        events.select(pl.col("contract_id").n_unique()).item()
+        if "contract_id" in events.columns and total_signals
+        else 0
+    )
 
     for horizon_ms in horizons_ms:
         label = FORWARD_HORIZON_LABELS.get(horizon_ms, f"{horizon_ms}ms")
@@ -445,6 +503,8 @@ def summarize_lead_lag(
                 "horizon_ms": horizon_ms,
                 "signals": valid.height,
                 "qualifying_signals": total_signals,
+                "raw_qualifying_signals": raw_total,
+                "unique_contracts": int(unique_contracts),
                 "mean_btc_move_usd": stats["mean_move"],
                 "median_btc_move_usd": stats["median_move"],
                 "mean_btc_return_bps": stats["mean_return_bps"],
@@ -474,6 +534,8 @@ def summarize_lead_lag(
                 "horizon_ms": None,
                 "signals": valid.height,
                 "qualifying_signals": total_signals,
+                "raw_qualifying_signals": raw_total,
+                "unique_contracts": int(unique_contracts),
                 "mean_btc_move_usd": stats["mean_move"],
                 "median_btc_move_usd": stats["median_move"],
                 "mean_btc_return_bps": stats["mean_return_bps"],

@@ -46,36 +46,51 @@ function quoteOrFallback(row, primaryKey, fallbackKey) {
   return finiteNumber(row?.[fallbackKey]);
 }
 
-function yesPrice(row, venue, mode = 'ask', action = 'buy') {
+function quotedSidePrice(row, venue, side, mode = 'ask', action = 'buy') {
   const prefix = venue === 'Polymarket' ? 'poly' : 'kalshi';
-  const genericKey = `${prefix}Yes`;
-  if (mode === 'last') return quoteOrFallback(row, `${prefix}YesLast`, genericKey);
+  const sideName = side === 'NO' ? 'No' : 'Yes';
+  const genericKey = `${prefix}${sideName}`;
+  if (mode === 'last') return quoteOrFallback(row, `${prefix}${sideName}Last`, genericKey);
   if (mode === 'midpoint') {
-    const explicit = finiteNumber(row?.[`${prefix}YesMid`]);
+    const explicit = finiteNumber(row?.[`${prefix}${sideName}Mid`]);
     if (Number.isFinite(explicit)) return explicit;
-    const bid = quoteOrFallback(row, `${prefix}YesBid`, genericKey);
-    const ask = quoteOrFallback(row, `${prefix}YesAsk`, genericKey);
+    const bid = quoteOrFallback(row, `${prefix}${sideName}Bid`, genericKey);
+    const ask = quoteOrFallback(row, `${prefix}${sideName}Ask`, genericKey);
     if (!Number.isFinite(bid) || !Number.isFinite(ask)) return Number.NaN;
     return (bid + ask) / 2;
   }
-  return quoteOrFallback(row, `${prefix}Yes${action === 'sell' ? 'Bid' : 'Ask'}`, genericKey);
+  return quoteOrFallback(row, `${prefix}${sideName}${action === 'sell' ? 'Bid' : 'Ask'}`, genericKey);
 }
 
 export function contractPrice(row, venue, side = 'YES', mode = 'ask', action = 'buy') {
-  const yes = yesPrice(row, venue, mode, action);
-  if (!Number.isFinite(yes)) return Number.NaN;
-  if (side === 'YES') return clamp(yes, 0.001, 0.999);
-  if (mode === 'last' || mode === 'midpoint') return clamp(1 - yes, 0.001, 0.999);
-  // Buy NO crosses the complementary YES bid; sell NO crosses the complementary YES ask.
-  const complementaryYes = yesPrice(row, venue, 'ask', action === 'buy' ? 'sell' : 'buy');
-  if (!Number.isFinite(complementaryYes)) return Number.NaN;
-  return clamp(1 - complementaryYes, 0.001, 0.999);
+  const explicit = quotedSidePrice(row, venue, side, mode, action);
+  if (Number.isFinite(explicit)) return clamp(explicit, 0.001, 0.999);
+  if (side === 'YES') return Number.NaN;
+
+  // Some venue schemas expose only YES-side quotes. In that case NO can be
+  // reconstructed from the complementary YES side. Explicit NO books always win.
+  const yes = quotedSidePrice(row, venue, 'YES', mode, action);
+  if (mode === 'last' || mode === 'midpoint') {
+    return Number.isFinite(yes) ? clamp(1 - yes, 0.001, 0.999) : Number.NaN;
+  }
+  const complementaryYes = quotedSidePrice(row, venue, 'YES', 'ask', action === 'buy' ? 'sell' : 'buy');
+  return Number.isFinite(complementaryYes) ? clamp(1 - complementaryYes, 0.001, 0.999) : Number.NaN;
 }
 
 function selectedSpot(row, btcSource = 'Composite (Binance + Coinbase)') {
-  if (btcSource === 'Binance') return finiteNumber(row?.binancePrice ?? row?.btcPrice);
-  if (btcSource === 'Coinbase') return finiteNumber(row?.coinbasePrice ?? row?.btcPrice);
-  return finiteNumber(row?.compositePrice ?? row?.btcPrice);
+  if (!row) return Number.NaN;
+  if (btcSource === 'Binance') return finiteNumber(row.binancePrice);
+  if (btcSource === 'Coinbase') return finiteNumber(row.coinbasePrice);
+  return finiteNumber(row.compositePrice ?? row.btcPrice);
+}
+
+function sourceFeature(row, baseKey, btcSource = 'Composite (Binance + Coinbase)') {
+  if (!row) return Number.NaN;
+  const capitalized = `${baseKey.charAt(0).toUpperCase()}${baseKey.slice(1)}`;
+  if (btcSource === 'Binance') return finiteNumber(row[`binance${capitalized}`]);
+  if (btcSource === 'Coinbase') return finiteNumber(row[`coinbase${capitalized}`]);
+  const explicitComposite = finiteNumber(row[`composite${capitalized}`]);
+  return Number.isFinite(explicitComposite) ? explicitComposite : finiteNumber(row[baseKey]);
 }
 
 function rowTimeMs(row) {
@@ -116,6 +131,14 @@ function lookbackGlobalRow(context, milliseconds) {
   return findAtOrBefore(context.historyRows || [], currentMs - Math.max(0, Number(milliseconds)), context.rowIndex - 1);
 }
 
+function previousTimeRow(context) {
+  const currentMs = rowTimeMs(context.currentRow);
+  if (!Number.isFinite(currentMs)) return null;
+  // Date.parse is millisecond-granular here. Requiring < current timestamp avoids
+  // treating another contract snapshot at the same timestamp as a BTC crossover.
+  return findAtOrBefore(context.historyRows || [], currentMs - 1, context.rowIndex - 1);
+}
+
 function referencePrice(row, reference, execution, dataSettings = {}) {
   if (dataSettings.referenceMode === 'BTC spot only (diagnostic)') {
     return selectedSpot(row, dataSettings.btcSource);
@@ -145,7 +168,19 @@ function venueOutcomeYes(row, venue) {
   const venueKey = venue === 'Polymarket' ? 'polyOutcomeYes' : 'kalshiOutcomeYes';
   const venueOutcome = parseOutcome(row?.[venueKey]);
   if (venueOutcome !== null) return venueOutcome;
-  return parseOutcome(row?.outcomeYes);
+
+  const rowVenue = String(row?.venue || '').toLowerCase();
+  if (rowVenue && rowVenue !== venue.toLowerCase()) return null;
+  if (rowVenue) {
+    return parseOutcome(row?.outcomeYes ?? row?.finalOutcomeYes ?? row?.final_outcome_yes);
+  }
+
+  // Legacy single-venue fixtures may still use outcomeYes, but do not use a
+  // generic outcome on a combined row that visibly contains the other venue.
+  const otherVenuePresent = venue === 'Kalshi'
+    ? Object.keys(row || {}).some((key) => key.startsWith('poly'))
+    : Object.keys(row || {}).some((key) => key.startsWith('kalshi'));
+  return otherVenuePresent ? null : parseOutcome(row?.outcomeYes);
 }
 
 function parseTimestampMs(value, fallback = Number.NaN) {
@@ -176,26 +211,28 @@ function pmFactorPriceMatches(factor, row, previousContractRow, context) {
   });
 }
 
-function vwapSetupMatches(v, row, previousRow) {
-  const price = Number(row.btcPrice);
-  const vwap = Number(row.vwap);
+function vwapSetupMatches(v, row, previousRow, context) {
+  const source = context.dataSettings.btcSource;
+  const price = selectedSpot(row, source);
+  const vwap = sourceFeature(row, 'vwap', source);
   if (!Number.isFinite(price) || !Number.isFinite(vwap)) return false;
   const tolerance = Number(v.tolerancePct || 0) / 100;
   const upper = vwap * (1 + tolerance);
   const lower = vwap * (1 - tolerance);
-  const prevPrice = Number(previousRow?.btcPrice);
-  const prevVwap = Number(previousRow?.vwap);
+  const prevPrice = selectedSpot(previousRow, source);
+  const prevVwap = sourceFeature(previousRow, 'vwap', source);
+  const returnDirection = Number.isFinite(prevPrice) ? price - prevPrice : Number.NaN;
   switch (v.setup) {
     case 'Bullish bias': return price > vwap;
     case 'Bearish bias': return price < vwap;
-    case 'Reversal up': return !!previousRow && prevPrice < prevVwap && price >= vwap;
-    case 'Reversal down': return !!previousRow && prevPrice > prevVwap && price <= vwap;
-    case 'Continuation up': return price > upper && Number(row.btcReturnPct) > 0;
-    case 'Continuation down': return price < lower && Number(row.btcReturnPct) < 0;
-    case 'Support hold': return price >= vwap && price <= upper && Number(row.btcReturnPct) >= 0;
-    case 'Resistance hold': return price <= vwap && price >= lower && Number(row.btcReturnPct) <= 0;
-    case 'Breakthrough up': return !!previousRow && prevPrice <= prevVwap && price > upper;
-    case 'Breakthrough down': return !!previousRow && prevPrice >= prevVwap && price < lower;
+    case 'Reversal up': return !!previousRow && Number.isFinite(prevPrice) && Number.isFinite(prevVwap) && prevPrice < prevVwap && price >= vwap;
+    case 'Reversal down': return !!previousRow && Number.isFinite(prevPrice) && Number.isFinite(prevVwap) && prevPrice > prevVwap && price <= vwap;
+    case 'Continuation up': return price > upper && returnDirection > 0;
+    case 'Continuation down': return price < lower && returnDirection < 0;
+    case 'Support hold': return price >= vwap && price <= upper && returnDirection >= 0;
+    case 'Resistance hold': return price <= vwap && price >= lower && returnDirection <= 0;
+    case 'Breakthrough up': return !!previousRow && Number.isFinite(prevPrice) && Number.isFinite(prevVwap) && prevPrice <= prevVwap && price > upper;
+    case 'Breakthrough down': return !!previousRow && Number.isFinite(prevPrice) && Number.isFinite(prevVwap) && prevPrice >= prevVwap && price < lower;
     default: return price > vwap;
   }
 }
@@ -203,6 +240,7 @@ function vwapSetupMatches(v, row, previousRow) {
 export function factorMatches(factor, row, previousRow, context) {
   const v = factor.values || {};
   const previousContractRow = context.previousContractRow || null;
+  const priorBtcRow = previousTimeRow(context);
   switch (factor.type) {
     case 'pm_price':
       return pmFactorPriceMatches(factor, row, previousContractRow, context);
@@ -256,35 +294,48 @@ export function factorMatches(factor, row, previousRow, context) {
       return compare(Number(residual), v.operator, Number(v.value));
     }
     case 'vwap_setup':
-      return vwapSetupMatches(v, row, previousRow);
+      return vwapSetupMatches(v, row, priorBtcRow, context);
     case 'ema_cross': {
-      if (v.operator === 'fast_above') return row.emaFast > row.emaSlow;
-      if (v.operator === 'fast_below') return row.emaFast < row.emaSlow;
-      if (!previousRow) return false;
-      if (v.operator === 'cross_up') return previousRow.emaFast <= previousRow.emaSlow && row.emaFast > row.emaSlow;
-      if (v.operator === 'cross_down') return previousRow.emaFast >= previousRow.emaSlow && row.emaFast < row.emaSlow;
+      const source = context.dataSettings.btcSource;
+      const fast = sourceFeature(row, 'emaFast', source);
+      const slow = sourceFeature(row, 'emaSlow', source);
+      if (!Number.isFinite(fast) || !Number.isFinite(slow)) return false;
+      if (v.operator === 'fast_above') return fast > slow;
+      if (v.operator === 'fast_below') return fast < slow;
+      if (!priorBtcRow) return false;
+      const previousFast = sourceFeature(priorBtcRow, 'emaFast', source);
+      const previousSlow = sourceFeature(priorBtcRow, 'emaSlow', source);
+      if (!Number.isFinite(previousFast) || !Number.isFinite(previousSlow)) return false;
+      if (v.operator === 'cross_up') return previousFast <= previousSlow && fast > slow;
+      if (v.operator === 'cross_down') return previousFast >= previousSlow && fast < slow;
       return false;
     }
     case 'prior_day_level': {
+      const source = context.dataSettings.btcSource;
       const key = v.level === 'High' ? 'yesterdayHigh' : v.level === 'Low' ? 'yesterdayLow' : 'yesterdayClose';
-      const level = Number(row[key]);
-      if (!Number.isFinite(level)) return false;
-      if (v.operator === 'within_pct') return Math.abs(Number(row.btcPrice) / level - 1) * 100 <= Number(v.tolerancePct);
-      const previous = previousRow ? Number(previousRow.btcPrice) : null;
-      const previousLevel = previousRow ? Number(previousRow[key]) : null;
-      if (v.operator === 'crosses_up') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous <= previousLevel && Number(row.btcPrice) > level;
-      if (v.operator === 'crosses_down') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous >= previousLevel && Number(row.btcPrice) < level;
-      return compare(Number(row.btcPrice), v.operator, level);
+      const level = sourceFeature(row, key, source);
+      const price = selectedSpot(row, source);
+      if (!Number.isFinite(level) || !Number.isFinite(price)) return false;
+      if (v.operator === 'within_pct') return Math.abs(price / level - 1) * 100 <= Number(v.tolerancePct);
+      const previous = selectedSpot(priorBtcRow, source);
+      const previousLevel = sourceFeature(priorBtcRow, key, source);
+      if (v.operator === 'crosses_up') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous <= previousLevel && price > level;
+      if (v.operator === 'crosses_down') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous >= previousLevel && price < level;
+      return compare(price, v.operator, level);
     }
     case 'prior_week_level': {
+      const source = context.dataSettings.btcSource;
       const map = { 'Average close': 'priorWeekAvgClose', High: 'priorWeekHigh', Low: 'priorWeekLow', Close: 'priorWeekClose' };
       const key = map[v.level] || 'priorWeekAvgClose';
-      const level = Number(row[key]);
-      if (!Number.isFinite(level)) return false;
-      if (v.operator === 'within_pct') return Math.abs(Number(row.btcPrice) / level - 1) * 100 <= Number(v.tolerancePct);
-      if (v.operator === 'crosses_up') return !!previousRow && Number(previousRow.btcPrice) <= Number(previousRow[key]) && Number(row.btcPrice) > level;
-      if (v.operator === 'crosses_down') return !!previousRow && Number(previousRow.btcPrice) >= Number(previousRow[key]) && Number(row.btcPrice) < level;
-      return compare(Number(row.btcPrice), v.operator, level);
+      const level = sourceFeature(row, key, source);
+      const price = selectedSpot(row, source);
+      if (!Number.isFinite(level) || !Number.isFinite(price)) return false;
+      if (v.operator === 'within_pct') return Math.abs(price / level - 1) * 100 <= Number(v.tolerancePct);
+      const previous = selectedSpot(priorBtcRow, source);
+      const previousLevel = sourceFeature(priorBtcRow, key, source);
+      if (v.operator === 'crosses_up') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous <= previousLevel && price > level;
+      if (v.operator === 'crosses_down') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous >= previousLevel && price < level;
+      return compare(price, v.operator, level);
     }
     case 'return_momentum': {
       const lag = lookbackGlobalRow(context, Number(v.lookbackMinutes || 0) * 60_000);
@@ -293,10 +344,12 @@ export function factorMatches(factor, row, previousRow, context) {
       if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return false;
       return compare((current / previous - 1) * 100, v.operator, Number(v.returnPct));
     }
-    case 'realized_vol':
-      return compare(Number(row.realizedVolPct), v.operator, Number(v.annualizedPct));
+    case 'realized_vol': {
+      const vol = sourceFeature(row, 'realizedVolPct', context.dataSettings.btcSource);
+      return compare(vol, v.operator, Number(v.annualizedPct));
+    }
     case 'round_level': {
-      const price = Number(row.btcPrice);
+      const price = selectedSpot(row, context.dataSettings.btcSource);
       if (!Number.isFinite(price)) return false;
       const round = nearestRound(price, v.rounding);
       return Math.abs(price - round) <= Number(v.distance);
@@ -335,7 +388,7 @@ function getSizingFraction({ risk, entryPrice, pastOutcomes, execution }) {
   const q = betaPosteriorMean(sample, Number(risk.kellyPriorWins || 0), Number(risk.kellyPriorLosses || 0));
   const edge = q - entryPrice;
   if (edge * 100 < Number(risk.minEdgePct || 0)) return 0;
-  const fullKelly = edge <= 0 ? 0 : edge / Math.max(0.001, 1 - entryPrice);
+  const fullKelly = edge <= 0 || entryPrice >= 1 ? 0 : edge / Math.max(0.001, 1 - entryPrice);
   return fullKelly * Number(risk.kellyFraction || 0.25);
 }
 
@@ -403,10 +456,13 @@ function longestStreak(outcomes, wanted) {
 function calibrationError(trades) {
   if (!trades.length) return 0;
   const bins = Array.from({ length: 10 }, () => []);
-  trades.forEach((trade) => bins[Math.min(9, Math.floor(trade.entryPrice * 10))].push(trade));
+  trades.forEach((trade) => {
+    const probability = clamp(trade.marketProbability, 0.001, 0.999);
+    bins[Math.min(9, Math.floor(probability * 10))].push(trade);
+  });
   return bins.reduce((sum, bucket) => {
     if (!bucket.length) return sum;
-    const predicted = mean(bucket.map((t) => t.entryPrice));
+    const predicted = mean(bucket.map((t) => clamp(t.marketProbability, 0.001, 0.999)));
     const actual = mean(bucket.map((t) => t.settlementWon ? 1 : 0));
     return sum + (bucket.length / trades.length) * Math.abs(predicted - actual);
   }, 0);
@@ -420,7 +476,7 @@ function advancedMetrics(trades, equity, cagr) {
   };
   const outcomes = trades.map((trade) => trade.settlementWon);
   const wins = outcomes.filter(Boolean).length;
-  const probs = trades.map((trade) => clamp(trade.entryPrice, 0.001, 0.999));
+  const probs = trades.map((trade) => clamp(trade.marketProbability, 0.001, 0.999));
   const brier = mean(trades.map((trade, i) => (probs[i] - (trade.settlementWon ? 1 : 0)) ** 2));
   const logLoss = -mean(trades.map((trade, i) => {
     const y = trade.settlementWon ? 1 : 0;
@@ -429,7 +485,8 @@ function advancedMetrics(trades, equity, cagr) {
   const [confidenceLow, confidenceHigh] = wilsonInterval(wins, trades.length);
   const observed = wins / trades.length;
   const expected = mean(probs);
-  const standardError = Math.sqrt(Math.max(1e-9, expected * (1 - expected) / trades.length));
+  const varianceOfMean = probs.reduce((sum, p) => sum + p * (1 - p), 0) / (trades.length ** 2);
+  const standardError = Math.sqrt(Math.max(1e-12, varianceOfMean));
   const z = (observed - expected) / standardError;
   const pValueApprox = Math.min(1, 2 * (1 - normalCdf(Math.abs(z))));
   const pnls = trades.map((trade) => trade.pnl);
@@ -464,7 +521,7 @@ function executableSellPrice(row, position, fillMode, risk) {
   const raw = contractPrice(row, position.venue, position.side, fillMode, 'sell');
   if (!Number.isFinite(raw)) return Number.NaN;
   const friction = (Number(risk.slippageCents || 0) + Number(risk.exitFeeCents || 0)) / 100;
-  return clamp(raw - friction, 0.001, 0.999);
+  return clamp(raw - friction, 0, 1);
 }
 
 function shouldExitPosition(position, row, execution, fillMode, risk) {
@@ -493,8 +550,8 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
   const openPositions = [];
   const previousByContract = new Map();
   const historyByContract = new Map();
+  const lastEntryByContract = new Map();
   let cash = startingCapital;
-  let lastEntryTime = -Infinity;
 
   const openCost = () => openPositions.reduce((sum, position) => sum + position.allocation, 0);
   const markedValue = () => openPositions.reduce((sum, position) => sum + position.shares * position.lastMark, 0);
@@ -521,7 +578,6 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
   sortedRows.forEach((row, index) => {
     const ts = new Date(row.timestamp).getTime();
     settleThrough(ts);
-    const previousRow = index > 0 ? sortedRows[index - 1] : null;
     const previousContractRow = previousByContract.get(row.contractId) || null;
     const contractHistory = historyByContract.get(row.contractId) || [];
 
@@ -545,7 +601,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
       rowIndex: index,
       currentRow: row,
     };
-    const matches = factors.map((factor) => factorMatches(factor, row, previousRow, context));
+    const matches = factors.map((factor) => factorMatches(factor, row, null, context));
     const signal = joinMode === 'OR' ? matches.some(Boolean) : matches.every(Boolean);
     previousByContract.set(row.contractId, row);
     contractHistory.push(row);
@@ -557,6 +613,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     if (execution.reentryMode === 'once' && count >= 1) return;
     if (execution.reentryMode === 'limited' && count >= Number(execution.maxEntriesPerContract || 1)) return;
     const cooldownMs = Number(execution.entryCooldownSeconds || 0) * 1000;
+    const lastEntryTime = lastEntryByContract.get(row.contractId) ?? -Infinity;
     if (ts - lastEntryTime < cooldownMs) return;
 
     const rawEntry = contractPrice(row, execution.tradeVenue, execution.tradeSide, fillMode, 'buy');
@@ -565,7 +622,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     if (outcomeYes === null) return;
 
     const entryFriction = (Number(risk.slippageCents || 0) + Number(risk.entryFeeCents || 0)) / 100;
-    const entryPrice = clamp(rawEntry + entryFriction, 0.001, 0.999);
+    const entryPrice = Math.max(0.001, rawEntry + entryFriction);
     let sizingFraction = getSizingFraction({ risk, entryPrice, pastOutcomes, execution });
     sizingFraction = Math.min(sizingFraction, Number(risk.maxTradePct || 100) / 100);
     if (sizingFraction <= 0) return;
@@ -583,19 +640,22 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     const expiryTs = parseTimestampMs(row.expiryTs ?? row.expiry, fallbackExpiry);
     if (!Number.isFinite(expiryTs) || expiryTs < ts) return;
     const spot = selectedSpot(row, dataSettings.btcSource);
+    const vol = sourceFeature(row, 'realizedVolPct', dataSettings.btcSource);
     const yesModelProbability = digitalProbability({
       spot,
       strike: Number(row.strike),
       timeYears: Math.max(Number(row.secondsRemaining), 1) / (365.25 * 24 * 3600),
-      volatility: Math.max(Number(row.realizedVolPct || 1), 1) / 100,
+      volatility: Math.max(Number.isFinite(vol) ? vol : 1, 1) / 100,
     });
     const modelProbability = execution.tradeSide === 'YES' ? yesModelProbability : 1 - yesModelProbability;
+    const observedProbability = contractPrice(row, execution.tradeVenue, execution.tradeSide, 'midpoint', 'buy');
+    const marketProbability = Number.isFinite(observedProbability) ? observedProbability : rawEntry;
 
     const initialSell = contractPrice(row, execution.tradeVenue, execution.tradeSide, fillMode, 'sell');
     const exitFriction = (Number(risk.slippageCents || 0) + Number(risk.exitFeeCents || 0)) / 100;
     const initialMark = Number.isFinite(initialSell)
-      ? clamp(initialSell - exitFriction, 0.001, 0.999)
-      : clamp(rawEntry, 0.001, 0.999);
+      ? clamp(initialSell - exitFriction, 0, 1)
+      : clamp(rawEntry, 0, 1);
 
     cash -= allocation;
     openPositions.push({
@@ -605,6 +665,8 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
       venue: execution.tradeVenue,
       side: execution.tradeSide,
       fillMode,
+      rawEntryPrice: rawEntry,
+      marketProbability,
       entryPrice,
       allocation,
       shares,
@@ -616,7 +678,10 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
       lastMark: initialMark,
     });
     entryCounts.set(row.contractId, count + 1);
-    lastEntryTime = ts;
+    lastEntryByContract.set(row.contractId, ts);
+    // Record the immediately executable post-entry mark so spread/fees are part
+    // of drawdown even if the next observation is far away.
+    equity.push({ timestamp: row.timestamp, equity: accountEquity() });
   });
 
   settleThrough(Infinity);
@@ -663,6 +728,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     },
     warnings: [
       ...(risk.sizingMode === 'kelly' && execution.exitMode !== 'expiry' ? ['Kelly is disabled for early-exit tests; fixed % sizing is used because binary Kelly does not directly apply to arbitrary exit distributions.'] : []),
+      ...(dataSettings.btcSource !== 'Composite (Binance + Coinbase)' && trades.some((trade) => !Number.isFinite(trade.btcPrice)) ? [`Some ${dataSettings.btcSource} observations were unavailable; the engine does not fall back to another BTC source.`] : []),
     ],
   };
 }

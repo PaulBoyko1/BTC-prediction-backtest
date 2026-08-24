@@ -1,11 +1,11 @@
 {
   "name": "btc-prediction-backtest",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/app.js && node --check src/backtest.js && node --check src/catalog.js && node --check src/mockData.js && node --check src/dataAdapters.js && node --check src/referenceLab.js && node --check scripts/ingest.mjs && node --check scripts/chainlink-reference.mjs && node --check tests/smoke.mjs && node --check tests/factor-lookbacks.mjs",
-    "test": "node tests/smoke.mjs && node tests/factor-lookbacks.mjs",
+    "check": "node --check src/app.js && node --check src/uiGuardrails.js && node --check src/backtest.js && node --check src/catalog.js && node --check src/mockData.js && node --check src/dataAdapters.js && node --check src/referenceLab.js && node --check scripts/ingest.mjs && node --check scripts/chainlink-reference.mjs && node --check tests/smoke.mjs && node --check tests/factor-lookbacks.mjs && node --check tests/logical-consistency.mjs",
+    "test": "node tests/smoke.mjs && node tests/factor-lookbacks.mjs && node tests/logical-consistency.mjs",
     "ingest": "node scripts/ingest.mjs",
     "chainlink:reference": "node scripts/chainlink-reference.mjs"
   },
