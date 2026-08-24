@@ -3,4 +3,11 @@ data/cache/
 data/normalized/
 *.parquet
 *.duckdb
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
 .DS_Store
