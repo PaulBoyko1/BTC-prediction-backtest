@@ -10,13 +10,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Install JavaScript dependencies
+        run: npm install --ignore-scripts
+
       - name: Check JavaScript syntax
         run: npm run check
-      - name: Run deterministic backtest smoke tests
+
+      - name: Run deterministic browser-engine smoke tests
         run: npm test
+
+      - name: Verify Chainlink SDK import
+        run: node -e "import('@chainlink/data-streams-sdk').then(() => console.log('Chainlink SDK import OK'))"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python research backend
+        run: python -m pip install -e '.[dev]'
+
+      - name: Compile Python backend
+        run: python -m compileall -q backend
+
+      - name: Run Python lead-lag tests
+        run: pytest -q
+
       - name: Check required files
         run: |
           test -f index.html
@@ -24,6 +47,12 @@ jobs:
           test -f styles.css
           test -f README.md
           test -f QUESTIONS.txt
+          test -f DECISIONS.md
           test -f API_NOTES.md
           test -f DATA_SCHEMA.md
+          test -f REFERENCE_DATA_RESEARCH.md
+          test -f pyproject.toml
+          test -f .env.example
           test -f scripts/ingest.mjs
+          test -f scripts/chainlink-reference.mjs
+          test -f backend/lead_lag.py
