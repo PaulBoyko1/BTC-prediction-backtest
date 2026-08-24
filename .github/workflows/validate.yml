@@ -20,6 +20,7 @@ jobs:
       - name: Check required files
         run: |
           test -f index.html
+          test -f reference.html
           test -f styles.css
           test -f README.md
           test -f QUESTIONS.txt
