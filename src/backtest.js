@@ -78,6 +78,44 @@ function selectedSpot(row, btcSource = 'Composite (Binance + Coinbase)') {
   return finiteNumber(row?.compositePrice ?? row?.btcPrice);
 }
 
+function rowTimeMs(row) {
+  const value = Date.parse(row?.timestamp);
+  return Number.isFinite(value) ? value : Number.NaN;
+}
+
+function findAtOrBefore(rows, targetMs, maxIndex = rows.length - 1) {
+  let low = 0;
+  let high = Math.min(maxIndex, rows.length - 1);
+  let found = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const time = rowTimeMs(rows[middle]);
+    if (!Number.isFinite(time)) {
+      high = middle - 1;
+      continue;
+    }
+    if (time <= targetMs) {
+      found = rows[middle];
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return found;
+}
+
+function lookbackContractRow(context, seconds) {
+  const currentMs = rowTimeMs(context.currentRow);
+  if (!Number.isFinite(currentMs)) return null;
+  return findAtOrBefore(context.contractHistory || [], currentMs - Math.max(0, Number(seconds)) * 1000);
+}
+
+function lookbackGlobalRow(context, milliseconds) {
+  const currentMs = rowTimeMs(context.currentRow);
+  if (!Number.isFinite(currentMs)) return null;
+  return findAtOrBefore(context.historyRows || [], currentMs - Math.max(0, Number(milliseconds)), context.rowIndex - 1);
+}
+
 function referencePrice(row, reference, execution, dataSettings = {}) {
   if (dataSettings.referenceMode === 'BTC spot only (diagnostic)') {
     return selectedSpot(row, dataSettings.btcSource);
@@ -169,12 +207,22 @@ export function factorMatches(factor, row, previousRow, context) {
     case 'pm_price':
       return pmFactorPriceMatches(factor, row, previousContractRow, context);
     case 'pm_delta': {
-      const delta = v.venue === 'Polymarket' ? row.polyDelta : row.kalshiDelta;
-      return compare(Number(delta), v.operator, Number(v.value));
+      const venue = resolveVenue(v.venue, context.execution);
+      const lag = lookbackContractRow(context, Number(v.lookbackSeconds || 0));
+      if (!lag) return false;
+      const currentProbability = contractPrice(row, venue, 'YES', 'midpoint', 'buy');
+      const lagProbability = contractPrice(lag, venue, 'YES', 'midpoint', 'buy');
+      if (!Number.isFinite(currentProbability) || !Number.isFinite(lagProbability)) return false;
+      return compare(currentProbability - lagProbability, v.operator, Number(v.value));
     }
     case 'pm_velocity': {
-      const velocity = v.venue === 'Polymarket' ? row.polyVelocity : row.kalshiVelocity;
-      return compare(Number(velocity), v.operator, Number(v.value));
+      const venue = resolveVenue(v.venue, context.execution);
+      if (!previousContractRow) return false;
+      const currentProbability = contractPrice(row, venue, 'YES', 'midpoint', 'buy');
+      const previousProbability = contractPrice(previousContractRow, venue, 'YES', 'midpoint', 'buy');
+      const elapsedSeconds = (rowTimeMs(row) - rowTimeMs(previousContractRow)) / 1000;
+      if (!Number.isFinite(currentProbability) || !Number.isFinite(previousProbability) || !(elapsedSeconds > 0)) return false;
+      return compare((currentProbability - previousProbability) / elapsedSeconds, v.operator, Number(v.value));
     }
     case 'pm_book_imbalance': {
       const imbalance = v.venue === 'Polymarket' ? row.polyBookImbalance : row.kalshiBookImbalance;
@@ -184,6 +232,10 @@ export function factorMatches(factor, row, previousRow, context) {
       const kalshi = contractPrice(row, 'Kalshi', 'YES', context.fillMode, 'buy');
       const poly = contractPrice(row, 'Polymarket', 'YES', context.fillMode, 'buy');
       if (!Number.isFinite(kalshi) || !Number.isFinite(poly)) return false;
+      const kalshiTs = parseTimestampMs(row.kalshiQuoteTimestamp, rowTimeMs(row));
+      const polyTs = parseTimestampMs(row.polyQuoteTimestamp, rowTimeMs(row));
+      const toleranceMs = Math.max(0, Number(v.matchToleranceSeconds || 0)) * 1000;
+      if (Number.isFinite(kalshiTs) && Number.isFinite(polyTs) && Math.abs(kalshiTs - polyTs) > toleranceMs) return false;
       return compare(kalshi - poly, v.operator, Number(v.value));
     }
     case 'time_to_expiry':
@@ -234,8 +286,13 @@ export function factorMatches(factor, row, previousRow, context) {
       if (v.operator === 'crosses_down') return !!previousRow && Number(previousRow.btcPrice) >= Number(previousRow[key]) && Number(row.btcPrice) < level;
       return compare(Number(row.btcPrice), v.operator, level);
     }
-    case 'return_momentum':
-      return compare(Number(row.btcReturnPct), v.operator, Number(v.returnPct));
+    case 'return_momentum': {
+      const lag = lookbackGlobalRow(context, Number(v.lookbackMinutes || 0) * 60_000);
+      const current = selectedSpot(row, context.dataSettings.btcSource);
+      const previous = selectedSpot(lag, context.dataSettings.btcSource);
+      if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return false;
+      return compare((current / previous - 1) * 100, v.operator, Number(v.returnPct));
+    }
     case 'realized_vol':
       return compare(Number(row.realizedVolPct), v.operator, Number(v.annualizedPct));
     case 'round_level': {
@@ -244,8 +301,13 @@ export function factorMatches(factor, row, previousRow, context) {
       const round = nearestRound(price, v.rounding);
       return Math.abs(price - round) <= Number(v.distance);
     }
-    case 'btc_move_gate':
-      return compare(Math.abs(Number(row.btcMoveDollars)), v.operator, Number(v.dollars));
+    case 'btc_move_gate': {
+      const lag = lookbackGlobalRow(context, Number(v.lookbackSeconds || 0) * 1000);
+      const current = selectedSpot(row, context.dataSettings.btcSource);
+      const previous = selectedSpot(lag, context.dataSettings.btcSource);
+      if (!Number.isFinite(current) || !Number.isFinite(previous)) return false;
+      return compare(Math.abs(current - previous), v.operator, Number(v.dollars));
+    }
     case 'reference_distance': {
       const ref = referencePrice(row, v.reference, context.execution, context.dataSettings);
       return Number.isFinite(ref) && compare(ref - Number(row.strike), v.operator, Number(v.dollars));
@@ -430,6 +492,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
   const entryCounts = new Map();
   const openPositions = [];
   const previousByContract = new Map();
+  const historyByContract = new Map();
   let cash = startingCapital;
   let lastEntryTime = -Infinity;
 
@@ -460,6 +523,7 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     settleThrough(ts);
     const previousRow = index > 0 ? sortedRows[index - 1] : null;
     const previousContractRow = previousByContract.get(row.contractId) || null;
+    const contractHistory = historyByContract.get(row.contractId) || [];
 
     // Update marks and evaluate configured early exits before considering a new entry.
     [...openPositions].forEach((position) => {
@@ -471,10 +535,21 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     });
     equity.push({ timestamp: row.timestamp, equity: accountEquity() });
 
-    const context = { execution, dataSettings, fillMode, previousContractRow };
+    const context = {
+      execution,
+      dataSettings,
+      fillMode,
+      previousContractRow,
+      contractHistory,
+      historyRows: sortedRows,
+      rowIndex: index,
+      currentRow: row,
+    };
     const matches = factors.map((factor) => factorMatches(factor, row, previousRow, context));
     const signal = joinMode === 'OR' ? matches.some(Boolean) : matches.every(Boolean);
     previousByContract.set(row.contractId, row);
+    contractHistory.push(row);
+    historyByContract.set(row.contractId, contractHistory);
     if (!signal || factors.length === 0) return;
     if (row.marketHorizon !== execution.marketHorizon) return;
 
