@@ -1,0 +1,1 @@
+Temporary CI probe for validating the v0.2 repository state. This file is not intended for main.
