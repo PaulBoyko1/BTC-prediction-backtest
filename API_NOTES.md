@@ -1,74 +1,226 @@
-# API / Data Notes (verified 2026-08-23)
+# API / Data Notes
 
-## Recommended first-party sources
+Verified against current first-party documentation on 2026-08-23.
 
-### Kalshi — primary prediction-market source
+## Principle
 
-Use Kalshi's Predictions REST API for market discovery, trades, candlesticks and current order books. The public trade examples are plain GET requests and support ticker + timestamp filters with cursor pagination. Kalshi also exposes dedicated historical endpoints for archived trades/markets/candlesticks.
+The strategy engine consumes a normalized data model. Venue APIs and historical archives are acquisition sources, not strategy logic. This keeps the same signal definitions testable across Kalshi, Polymarket, Binance, Coinbase, and exact settlement-reference feeds.
 
-For real-time lead/lag research, use Kalshi WebSocket channels for order-book updates, market ticker updates and public trades. The WebSocket connection itself requires API-key authentication even when subscribing to public market-data channels.
+## Kalshi
 
-Important for BTC research: Kalshi also documents CF Benchmarks and Pyth value feeds, which can help align the prediction contract with the underlying reference/index used by the market.
+### REST
 
-### Polymarket — secondary prediction-market / discrepancy source
+Recommended production root:
 
-Use Polymarket market discovery + CLOB/data APIs for market metadata, order books, market activity and price history. Its prediction-market Market WebSocket is public and streams real-time order-book, price and lifecycle updates.
+`https://external-api.kalshi.com/trade-api/v2`
 
-The comparison engine must only pair contracts after normalizing expiry, side, strike/threshold and resolution source. A price difference between superficially similar contracts is not automatically arbitrage.
+Public market-data endpoints can be used without authentication. The repository adapter currently includes:
 
-### Binance — primary BTC microstructure reference
+- Market listing / metadata
+- Market lookup
+- Public trades with time filters and cursor pagination
+- Current order book
+- Market candlesticks
+- Historical cutoff lookup
+- Historical market candlestick path
 
-Use Binance Spot REST/WebSocket market data for BTC reference prices, aggregate trades, depth and klines. The current Spot REST API supports 1-second klines as well as 1m/5m/15m/etc. intervals, which is useful for coarse historical feature construction. For sub-second lead/lag tests, use raw/aggregate trade and depth event streams rather than candle bars.
+Kalshi exposes dedicated historical endpoints for data before its historical cutoff. The ingestion process must inspect the cutoff and route requests correctly rather than assuming one endpoint covers every date.
 
-### Coinbase — independent BTC cross-check
+### WebSocket
 
-Use Coinbase Advanced Trade REST for market data and WebSocket for live prices/order book. It is useful as an independent U.S. venue so a strategy is not accidentally learning quirks of a single BTC exchange.
+Recommended production endpoint:
 
-### Chainlink / settlement reference
+`wss://external-api-ws.kalshi.com/trade-api/ws/v2`
 
-Where a prediction contract resolves from Chainlink/TWAP or another oracle/index, ingest that settlement source separately. Backtests must be versioned by actual resolution rule; do not silently mix contracts whose oracle or rule changed.
+Kalshi requires API-key authentication to establish the WebSocket connection, including for public market-data channels. Public REST market data does not require that authentication.
+
+Useful real-time channels include public trades/ticker and order-book updates. These are important for the Kalshi-leads-BTC test because candle data cannot establish sub-second ordering.
+
+### BTC 15-minute settlement reference
+
+Current BTC 15-minute market rules describe the **CF Benchmarks Bitcoin Real-Time Index (BRTI)**. The current rule examples collect 60 RTI observations, one per second during the final minute, and use the simple average for settlement comparison.
+
+Therefore a Kalshi BTC15m backtest should preserve at least:
+
+- market rule version
+- comparison/start value
+- strike/reference value as applicable
+- expiry window
+- exact BRTI observations or a verified reconstruction source
+- final settlement value
+
+Do **not** label Binance/Coinbase spot as BRTI.
+
+Historical BRTI tick availability/licensing still needs to be resolved before the app can claim exact reference-price backtests for every historical Kalshi contract. Until then, exchange spot is a separate diagnostic only.
+
+## Polymarket
+
+### Market metadata / discovery
+
+Gamma API:
+
+`https://gamma-api.polymarket.com`
+
+The market metadata layer is useful for condition IDs, token IDs, market dates, active/closed status, and resolution metadata.
+
+### CLOB data
+
+CLOB API:
+
+`https://clob.polymarket.com`
+
+The repository adapter currently includes:
+
+- Price history
+- Current order book
+- Midpoint
+
+The public market WebSocket endpoint is recorded for later live/order-book ingestion.
+
+### Trade history
+
+Data API:
+
+`https://data-api.polymarket.com`
+
+The repository adapter includes market/condition-scoped trades with timestamp filtering. Market/event-scoped historical queries can cover long windows, but pagination/limits still need to be handled in the production ingestion job.
+
+### BTC Up/Down settlement reference
+
+Current BTC Up/Down market pages identify **Chainlink BTC/USD Data Streams** as the resolution source and explicitly distinguish that source from ordinary exchange spot.
+
+Therefore Polymarket rows keep a distinct `polyReferencePrice` field. An exact historical reference backtest should use the Chainlink stream that matches the market rule. If an authorized historical stream/archive is unavailable, the UI should mark the reference series unavailable rather than silently substituting Coinbase, Binance, or a composite.
+
+## Binance
+
+Public spot root currently used by the adapter:
+
+`https://api.binance.com/api/v3`
+
+Adapter coverage:
+
+- BTCUSDT ticker
+- Klines
+- Aggregate trades
+- Current depth
+
+For lead/lag research, aggregate/raw trades and depth events are more useful than 1-minute/5-minute candles. Candle bars are appropriate for VWAP/EMA/prior-period feature construction, not for proving a 200ms–2s lead.
+
+## Coinbase
+
+The repository uses the public Coinbase Exchange market-data surface for simple unauthenticated BTC-USD acquisition:
+
+`https://api.exchange.coinbase.com`
+
+Adapter coverage:
+
+- BTC-USD ticker
+- Historical candles
+- Public trades
+- Order book
+
+Coinbase is primarily a robustness cross-check against Binance and can also participate in a configurable composite BTC price.
+
+## BTC source modes
+
+The UI currently supports:
+
+- Composite (Binance + Coinbase) — default research view
+- Binance
+- Coinbase
+
+In production, the composite definition must be explicit. A simple average is acceptable only as a diagnostic; a serious composite should define timestamp matching, stale-quote handling, and possibly weighting.
+
+## Why raw timestamps are the preferred acquisition target
+
+Raw timestamps preserve the ordering supplied by each venue. If Kalshi moves at 12:00:00.240 and Binance moves at 12:00:00.610, a 1-second bucket makes both events look simultaneous.
+
+Preferred workflow:
+
+1. Preserve original source timestamp and precision.
+2. Convert to a common UTC representation without discarding the source timestamp.
+3. Correct/measure clock alignment when possible.
+4. Derive 100ms / 250ms / 500ms / 1s / 5s / 1m buckets afterward.
+
+You can aggregate high-resolution data later. You cannot recover lost ordering from pre-aggregated bars.
 
 ## Historical-data architecture
 
-Do not make the browser UI repeatedly pull years of tick/order-book history. The planned production path should be:
+Three years of second-level observations is already roughly 95 million timestamps before trade/order-book events. Raw event data is substantially larger.
 
-1. Download/API-ingest raw venue data.
-2. Store immutable raw files by source/date.
-3. Normalize into Parquet (preferred) or another columnar format.
-4. Build derived feature tables (VWAP, EMA, prior-day/week levels, PM residuals, book imbalance, etc.).
-5. Run the heavy backtest engine outside the rendering thread (Python/Polars/DuckDB or equivalent).
-6. Send compact trade/equity/statistics results to the UI.
+Production path:
 
-This matters because three years of second-level data is already ~95 million timestamps before adding order-book events; raw event data is much larger.
+1. API/archive ingestion
+2. Immutable raw files by source/date
+3. Normalization into Parquet or another columnar format
+4. Feature generation
+5. DuckDB/Polars/Python or equivalent heavy backtest processing
+6. Compact results returned to the browser UI
 
-## First real-data ingestion order
+The browser should not repeatedly download and process multi-year raw tick history.
 
-1. Kalshi market metadata + trades + resolutions for BTC 15m / 5m / 1h families.
-2. Binance BTCUSDT trades / 1s bars aligned in UTC.
-3. Kalshi live/historical order-book data where obtainable at sufficient granularity.
-4. Polymarket equivalent BTC markets for discrepancy / confirmation tests.
-5. Coinbase BTC data as robustness cross-check.
-6. Options data (Deribit/Binance where available) for digital probability / implied distribution comparisons.
+## Required normalized prediction fields
 
-## Critical backtest fields
+At minimum:
 
-Every normalized prediction-market observation should retain:
-
+- source timestamp
+- normalized UTC timestamp
 - venue
-- event / market / contract identifiers
-- exact timestamp and source timestamp precision
-- YES/NO bid and ask (or enough book data to reconstruct them)
-- last trade and taker direction when available
-- size / depth
-- expiry / settlement timestamp
-- strike or comparison/reference price
-- market horizon (5m / 15m / 1h / etc.)
-- resolution source
-- rule version
+- market/event/contract IDs
+- market family/horizon
+- YES bid / ask / midpoint / last trade
+- NO prices or enough information to reconstruct executable complements
+- trade size/direction where available
+- order-book depth/imbalance where available
+- contract start/expiry
+- strike/comparison value
+- settlement source
+- rule/version identifier
 - final outcome
+- final settlement value
 
-Every BTC observation should retain venue + timestamp + price and, when available, bid/ask, trade direction, quantity and depth.
+## Required normalized BTC fields
 
-## Execution default
+At minimum:
 
-For research that says a contract "hits 45¢", the recommended default is **first realistically executable ask at or below 45¢**, not midpoint or last trade. Maker simulation should be a separate execution mode because fill probability and adverse selection must be modeled.
+- source timestamp
+- normalized UTC timestamp
+- venue
+- spot price
+- bid / ask where available
+- trade price/size/direction where available
+- order-book depth where available
+
+Derived bars/features can then add VWAP, EMA, returns, realized volatility, prior-day/week levels, round-level distance, and lead/lag features.
+
+## Feature lookback requirement
+
+Factors such as “Kalshi +8¢ in 5 seconds” or “BTC moved less than $20 in 5 seconds” must eventually be computed from timestamp-indexed history for the exact configured lookback. The current synthetic demo stores representative derived values so UI/execution behavior can be exercised; it is not the production feature engine.
+
+## Fee / execution history
+
+Real backtests should eventually version fees by venue and date. The UI currently exposes explicit entry/exit fee and slippage allowances so conservative sensitivity testing can begin before a full historical fee schedule is encoded.
+
+Order-book-depth and maker-fill simulation should be added only where historical depth is actually available; midpoint must never be treated as a guaranteed fill.
+
+## Current adapter status
+
+Connected in source code:
+
+- Kalshi public REST
+- Polymarket Gamma / CLOB / Data API
+- Binance public REST
+- Coinbase public Exchange REST
+- current WebSocket endpoint constants
+
+Not yet completed:
+
+- multi-year local historical backfill/cache
+- authenticated Kalshi WebSocket signer
+- live stream normalization
+- exact historical CF Benchmarks BRTI tick archive
+- exact historical Chainlink Data Streams archive
+- historical fee schedules
+- historical L2 reconstruction
+
+This distinction is intentional: an API client existing in code is not the same thing as having a complete, correctly normalized 1–3 year dataset.
