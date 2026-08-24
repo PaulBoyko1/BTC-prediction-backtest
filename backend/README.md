@@ -35,10 +35,29 @@ python -m backend.cli lead-lag \
   --shock-points 0.08 \
   --max-btc-move-usd 20 \
   --direction either \
+  --max-feature-staleness-ms 250 \
+  --max-forward-delay-ms 100 \
   --output data/cache/kalshi_lead_lag.parquet
 ```
 
 The engine uses backward `join_asof` operations for historical features and forward `join_asof` operations only for labels. The test suite explicitly changes future BTC prices and verifies that selected signals do not change.
+
+### Timing-quality controls
+
+A nominal horizon is not enough for high-frequency research. If the requested `100ms` target has no BTC observation until 600ms later, that must not silently be called a 100ms return.
+
+The event output therefore records:
+
+- `pm_effective_lookback_ms` — actual age between signal and matched prediction observation;
+- `pm_lag_staleness_ms` — how far before the exact lookback target the prediction match occurred;
+- `btc_now_age_ms` — age of the BTC observation used at signal time;
+- `btc_lag_age_ms` — age of the BTC observation used at the backward lookback target;
+- `btc_future_<horizon>_delay_ms` — how late the actual BTC label arrives after the requested forward target;
+- `btc_expiry_delay_ms` — same concept for expiry.
+
+`--max-feature-staleness-ms` rejects signals whose backward as-of matches are older than the chosen tolerance. `--max-forward-delay-ms` keeps the signal but nulls a future label whose observation arrives too late. Summaries report both `qualifying_signals` and the number of valid labeled `signals` per horizon.
+
+Choose tolerances based on the native data frequency and hypothesis. A tolerance appropriate for a 5-minute technical study may be completely unacceptable for a 100ms lead/lag claim.
 
 ## Minimum normalized inputs
 
@@ -55,6 +74,8 @@ BTC Parquet:
 - `price`.
 
 Keep Binance, Coinbase and any composite as distinct datasets or explicitly identified columns. Do not create an unnamed blended price.
+
+Rows with invalid prediction probabilities outside `[0,1]`, missing required timestamps/probabilities, or nonpositive BTC prices are rejected before signal generation.
 
 ## Exact settlement-reference sources
 
@@ -100,7 +121,7 @@ npm run chainlink:reference -- latest <feedId> data/raw/chainlink/latest.json
 npm run chainlink:reference -- page <feedId> <startUnixSeconds> 100 data/raw/chainlink/page.json
 ```
 
-The official SDK's historical-page example documents a last-30-days timestamp constraint. Do **not** assume the normal Data Streams API provides 1–3 years of historical TWAP reports. Older exact Polymarket reference-path tests require an authorized archive or remain unavailable.
+The official SDK's historical-page example documents a last-30-days timestamp constraint. Do **not** assume the normal Data Streams API provides 1–3 years of historical TWAP reports. Older exact Polymarket reference-path tests require an authorized archive; a reconstructed Binance/Coinbase TWAP may be used only as a clearly labeled proxy/calibration series.
 
 ## Data-quality labels
 
@@ -108,7 +129,7 @@ Every reference-based result should use one of these labels:
 
 - `exact_reference` — exact BRTI/Chainlink path is available.
 - `exact_outcome_only` — exact venue outcome/final settlement known, but intracontract oracle path unavailable.
-- `spot_proxy` — Binance/Coinbase/composite used only as a diagnostic proxy.
+- `spot_proxy` — Binance/Coinbase/composite/reconstructed TWAP used only as a diagnostic proxy.
 
 A `spot_proxy` must never be displayed as the contract's actual resolution source.
 

@@ -79,7 +79,11 @@ export function generateDemoDataset(years = 3, seed = 42) {
       const finalSpot = Math.max(1000, baseSpot + gaussian(random) * finalMoveScale + macroDrift * baseSpot * 0.08);
       const finalKalshiRef = finalSpot + gaussian(random) * 7;
       const finalPolyRef = finalSpot + gaussian(random) * 9;
-      const outcomeYes = ((finalKalshiRef + finalPolyRef) / 2) >= strike;
+      const kalshiOutcomeYes = finalKalshiRef >= strike;
+      const polyOutcomeYes = finalPolyRef >= strike;
+      // Generic outcome is retained only for backwards compatibility with single-venue fixtures.
+      // The backtest engine prefers the venue-specific outcome fields above.
+      const outcomeYes = kalshiOutcomeYes;
       const expiryTs = contractStart + totalSeconds * 1000;
       const contractId = `${marketHorizon}-${day}-${contractIndex}-${contractCounter++}`;
       const snapshots = marketHorizon === '1h' ? 9 : 7;
@@ -129,6 +133,8 @@ export function generateDemoDataset(years = 3, seed = 42) {
           marketHorizon,
           strike,
           outcomeYes,
+          kalshiOutcomeYes,
+          polyOutcomeYes,
           btcPrice: compositePrice,
           compositePrice,
           binancePrice,

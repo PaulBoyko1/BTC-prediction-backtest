@@ -1,16 +1,22 @@
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const mean = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
 
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : Number.NaN;
+}
+
 function compare(value, operator, threshold, previousValue = null) {
-  if (!Number.isFinite(Number(value))) return false;
+  if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(threshold))) return false;
   if (operator === '<=') return value <= threshold;
   if (operator === '>=') return value >= threshold;
   if (operator === '<') return value < threshold;
   if (operator === '>') return value > threshold;
   if (operator === 'abs>=') return Math.abs(value) >= threshold;
   if (operator === 'abs<=') return Math.abs(value) <= threshold;
-  if (operator === 'crosses_up') return previousValue !== null && previousValue < threshold && value >= threshold;
-  if (operator === 'crosses_down') return previousValue !== null && previousValue > threshold && value <= threshold;
+  const hasPrevious = previousValue !== null && previousValue !== undefined && Number.isFinite(Number(previousValue));
+  if (operator === 'crosses_up') return hasPrevious && previousValue < threshold && value >= threshold;
+  if (operator === 'crosses_down') return hasPrevious && previousValue > threshold && value <= threshold;
   return false;
 }
 
@@ -34,44 +40,130 @@ function resolveHorizon(value, execution) {
   return value;
 }
 
+function quoteOrFallback(row, primaryKey, fallbackKey) {
+  const primary = finiteNumber(row?.[primaryKey]);
+  if (Number.isFinite(primary)) return primary;
+  return finiteNumber(row?.[fallbackKey]);
+}
+
 function yesPrice(row, venue, mode = 'ask', action = 'buy') {
   const prefix = venue === 'Polymarket' ? 'poly' : 'kalshi';
-  if (mode === 'last') return Number(row[`${prefix}YesLast`] ?? row[`${prefix}Yes`] ?? 0.5);
+  const genericKey = `${prefix}Yes`;
+  if (mode === 'last') return quoteOrFallback(row, `${prefix}YesLast`, genericKey);
   if (mode === 'midpoint') {
-    const explicit = row[`${prefix}YesMid`];
-    if (explicit !== undefined) return Number(explicit);
-    const bid = Number(row[`${prefix}YesBid`] ?? row[`${prefix}Yes`] ?? 0.5);
-    const ask = Number(row[`${prefix}YesAsk`] ?? row[`${prefix}Yes`] ?? 0.5);
+    const explicit = finiteNumber(row?.[`${prefix}YesMid`]);
+    if (Number.isFinite(explicit)) return explicit;
+    const bid = quoteOrFallback(row, `${prefix}YesBid`, genericKey);
+    const ask = quoteOrFallback(row, `${prefix}YesAsk`, genericKey);
+    if (!Number.isFinite(bid) || !Number.isFinite(ask)) return Number.NaN;
     return (bid + ask) / 2;
   }
-  return Number(row[`${prefix}Yes${action === 'sell' ? 'Bid' : 'Ask'}`] ?? row[`${prefix}Yes`] ?? 0.5);
+  return quoteOrFallback(row, `${prefix}Yes${action === 'sell' ? 'Bid' : 'Ask'}`, genericKey);
 }
 
 export function contractPrice(row, venue, side = 'YES', mode = 'ask', action = 'buy') {
   const yes = yesPrice(row, venue, mode, action);
+  if (!Number.isFinite(yes)) return Number.NaN;
   if (side === 'YES') return clamp(yes, 0.001, 0.999);
   if (mode === 'last' || mode === 'midpoint') return clamp(1 - yes, 0.001, 0.999);
   // Buy NO crosses the complementary YES bid; sell NO crosses the complementary YES ask.
   const complementaryYes = yesPrice(row, venue, 'ask', action === 'buy' ? 'sell' : 'buy');
+  if (!Number.isFinite(complementaryYes)) return Number.NaN;
   return clamp(1 - complementaryYes, 0.001, 0.999);
 }
 
-function referencePrice(row, reference, execution) {
+function selectedSpot(row, btcSource = 'Composite (Binance + Coinbase)') {
+  if (btcSource === 'Binance') return finiteNumber(row?.binancePrice ?? row?.btcPrice);
+  if (btcSource === 'Coinbase') return finiteNumber(row?.coinbasePrice ?? row?.btcPrice);
+  return finiteNumber(row?.compositePrice ?? row?.btcPrice);
+}
+
+function rowTimeMs(row) {
+  const value = Date.parse(row?.timestamp);
+  return Number.isFinite(value) ? value : Number.NaN;
+}
+
+function findAtOrBefore(rows, targetMs, maxIndex = rows.length - 1) {
+  let low = 0;
+  let high = Math.min(maxIndex, rows.length - 1);
+  let found = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const time = rowTimeMs(rows[middle]);
+    if (!Number.isFinite(time)) {
+      high = middle - 1;
+      continue;
+    }
+    if (time <= targetMs) {
+      found = rows[middle];
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return found;
+}
+
+function lookbackContractRow(context, seconds) {
+  const currentMs = rowTimeMs(context.currentRow);
+  if (!Number.isFinite(currentMs)) return null;
+  return findAtOrBefore(context.contractHistory || [], currentMs - Math.max(0, Number(seconds)) * 1000);
+}
+
+function lookbackGlobalRow(context, milliseconds) {
+  const currentMs = rowTimeMs(context.currentRow);
+  if (!Number.isFinite(currentMs)) return null;
+  return findAtOrBefore(context.historyRows || [], currentMs - Math.max(0, Number(milliseconds)), context.rowIndex - 1);
+}
+
+function referencePrice(row, reference, execution, dataSettings = {}) {
+  if (dataSettings.referenceMode === 'BTC spot only (diagnostic)') {
+    return selectedSpot(row, dataSettings.btcSource);
+  }
   let choice = reference;
   if (!choice || choice === 'Auto by trade venue') {
     choice = execution.tradeVenue === 'Kalshi' ? 'Kalshi CF BRTI 60s average' : 'Polymarket Chainlink Data Stream';
   }
-  if (choice.includes('Kalshi')) return Number(row.kalshiReferencePrice ?? row.compositePrice ?? row.btcPrice);
-  return Number(row.polyReferencePrice ?? row.compositePrice ?? row.btcPrice);
+  // Never silently substitute exchange spot for a settlement reference.
+  if (choice.includes('Kalshi')) return finiteNumber(row?.kalshiReferencePrice);
+  if (choice.includes('Polymarket')) return finiteNumber(row?.polyReferencePrice);
+  return Number.NaN;
 }
 
-function selectedSpot(row, btcSource = 'Composite (Binance + Coinbase)') {
-  if (btcSource === 'Binance') return Number(row.binancePrice ?? row.btcPrice);
-  if (btcSource === 'Coinbase') return Number(row.coinbasePrice ?? row.btcPrice);
-  return Number(row.compositePrice ?? row.btcPrice);
+function parseOutcome(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'y', '1', 'up'].includes(normalized)) return true;
+    if (['false', 'no', 'n', '0', 'down'].includes(normalized)) return false;
+  }
+  return null;
 }
 
-function pmFactorPriceMatches(factor, row, previousRow, context) {
+function venueOutcomeYes(row, venue) {
+  const venueKey = venue === 'Polymarket' ? 'polyOutcomeYes' : 'kalshiOutcomeYes';
+  const venueOutcome = parseOutcome(row?.[venueKey]);
+  if (venueOutcome !== null) return venueOutcome;
+  return parseOutcome(row?.outcomeYes);
+}
+
+function parseTimestampMs(value, fallback = Number.NaN) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value))) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    if (numeric > 1e17) return numeric / 1_000_000; // nanoseconds
+    if (numeric > 1e14) return numeric / 1_000; // microseconds
+    if (numeric > 1e11) return numeric; // milliseconds
+    if (numeric > 1e8) return numeric * 1_000; // seconds
+    return numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function pmFactorPriceMatches(factor, row, previousContractRow, context) {
   const v = factor.values;
   const horizon = resolveHorizon(v.marketHorizon, context.execution);
   if (horizon && row.marketHorizon !== horizon) return false;
@@ -79,7 +171,7 @@ function pmFactorPriceMatches(factor, row, previousRow, context) {
   const venues = v.venue === 'Either' ? ['Kalshi', 'Polymarket'] : [resolveVenue(v.venue, context.execution)];
   return venues.some((venue) => {
     const current = contractPrice(row, venue, side, context.fillMode, 'buy');
-    const previous = previousRow ? contractPrice(previousRow, venue, side, context.fillMode, 'buy') : null;
+    const previous = previousContractRow ? contractPrice(previousContractRow, venue, side, context.fillMode, 'buy') : null;
     return compare(current, v.operator, Number(v.value), previous);
   });
 }
@@ -87,6 +179,7 @@ function pmFactorPriceMatches(factor, row, previousRow, context) {
 function vwapSetupMatches(v, row, previousRow) {
   const price = Number(row.btcPrice);
   const vwap = Number(row.vwap);
+  if (!Number.isFinite(price) || !Number.isFinite(vwap)) return false;
   const tolerance = Number(v.tolerancePct || 0) / 100;
   const upper = vwap * (1 + tolerance);
   const lower = vwap * (1 - tolerance);
@@ -109,24 +202,41 @@ function vwapSetupMatches(v, row, previousRow) {
 
 export function factorMatches(factor, row, previousRow, context) {
   const v = factor.values || {};
+  const previousContractRow = context.previousContractRow || null;
   switch (factor.type) {
     case 'pm_price':
-      return pmFactorPriceMatches(factor, row, previousRow, context);
+      return pmFactorPriceMatches(factor, row, previousContractRow, context);
     case 'pm_delta': {
-      const delta = v.venue === 'Polymarket' ? row.polyDelta : row.kalshiDelta;
-      return compare(Number(delta), v.operator, Number(v.value));
+      const venue = resolveVenue(v.venue, context.execution);
+      const lag = lookbackContractRow(context, Number(v.lookbackSeconds || 0));
+      if (!lag) return false;
+      const currentProbability = contractPrice(row, venue, 'YES', 'midpoint', 'buy');
+      const lagProbability = contractPrice(lag, venue, 'YES', 'midpoint', 'buy');
+      if (!Number.isFinite(currentProbability) || !Number.isFinite(lagProbability)) return false;
+      return compare(currentProbability - lagProbability, v.operator, Number(v.value));
     }
     case 'pm_velocity': {
-      const velocity = v.venue === 'Polymarket' ? row.polyVelocity : row.kalshiVelocity;
-      return compare(Number(velocity), v.operator, Number(v.value));
+      const venue = resolveVenue(v.venue, context.execution);
+      if (!previousContractRow) return false;
+      const currentProbability = contractPrice(row, venue, 'YES', 'midpoint', 'buy');
+      const previousProbability = contractPrice(previousContractRow, venue, 'YES', 'midpoint', 'buy');
+      const elapsedSeconds = (rowTimeMs(row) - rowTimeMs(previousContractRow)) / 1000;
+      if (!Number.isFinite(currentProbability) || !Number.isFinite(previousProbability) || !(elapsedSeconds > 0)) return false;
+      return compare((currentProbability - previousProbability) / elapsedSeconds, v.operator, Number(v.value));
     }
     case 'pm_book_imbalance': {
       const imbalance = v.venue === 'Polymarket' ? row.polyBookImbalance : row.kalshiBookImbalance;
       return compare(Number(imbalance), v.operator, Number(v.value));
     }
     case 'cross_market_spread': {
-      const spread = contractPrice(row, 'Kalshi', 'YES', context.fillMode, 'buy') - contractPrice(row, 'Polymarket', 'YES', context.fillMode, 'buy');
-      return compare(spread, v.operator, Number(v.value));
+      const kalshi = contractPrice(row, 'Kalshi', 'YES', context.fillMode, 'buy');
+      const poly = contractPrice(row, 'Polymarket', 'YES', context.fillMode, 'buy');
+      if (!Number.isFinite(kalshi) || !Number.isFinite(poly)) return false;
+      const kalshiTs = parseTimestampMs(row.kalshiQuoteTimestamp, rowTimeMs(row));
+      const polyTs = parseTimestampMs(row.polyQuoteTimestamp, rowTimeMs(row));
+      const toleranceMs = Math.max(0, Number(v.matchToleranceSeconds || 0)) * 1000;
+      if (Number.isFinite(kalshiTs) && Number.isFinite(polyTs) && Math.abs(kalshiTs - polyTs) > toleranceMs) return false;
+      return compare(kalshi - poly, v.operator, Number(v.value));
     }
     case 'time_to_expiry':
       return compare(Number(row.secondsRemaining), v.operator, Number(v.seconds));
@@ -134,11 +244,12 @@ export function factorMatches(factor, row, previousRow, context) {
       const horizon = resolveHorizon(v.marketHorizon, context.execution);
       if (horizon && row.marketHorizon !== horizon) return false;
       const spot = selectedSpot(row, context.dataSettings.btcSource);
+      if (!Number.isFinite(spot)) return false;
       const reference = v.reference === 'Current BTC' ? spot : nearestRound(spot, v.reference);
       const offset = Number(row.strike) - reference;
       const side = resolveSide(v.side, context.execution);
       const sidePrice = contractPrice(row, context.execution.tradeVenue, side, context.fillMode, 'buy');
-      return compare(offset, v.operator, Number(v.dollars)) && sidePrice <= Number(v.maxPrice);
+      return Number.isFinite(sidePrice) && compare(offset, v.operator, Number(v.dollars)) && sidePrice <= Number(v.maxPrice);
     }
     case 'pm_residual': {
       const residual = v.venue === 'Polymarket' ? row.polyResidual : row.kalshiResidual;
@@ -157,40 +268,54 @@ export function factorMatches(factor, row, previousRow, context) {
     case 'prior_day_level': {
       const key = v.level === 'High' ? 'yesterdayHigh' : v.level === 'Low' ? 'yesterdayLow' : 'yesterdayClose';
       const level = Number(row[key]);
+      if (!Number.isFinite(level)) return false;
       if (v.operator === 'within_pct') return Math.abs(Number(row.btcPrice) / level - 1) * 100 <= Number(v.tolerancePct);
       const previous = previousRow ? Number(previousRow.btcPrice) : null;
       const previousLevel = previousRow ? Number(previousRow[key]) : null;
-      if (v.operator === 'crosses_up') return previous !== null && previous <= previousLevel && Number(row.btcPrice) > level;
-      if (v.operator === 'crosses_down') return previous !== null && previous >= previousLevel && Number(row.btcPrice) < level;
+      if (v.operator === 'crosses_up') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous <= previousLevel && Number(row.btcPrice) > level;
+      if (v.operator === 'crosses_down') return Number.isFinite(previous) && Number.isFinite(previousLevel) && previous >= previousLevel && Number(row.btcPrice) < level;
       return compare(Number(row.btcPrice), v.operator, level);
     }
     case 'prior_week_level': {
       const map = { 'Average close': 'priorWeekAvgClose', High: 'priorWeekHigh', Low: 'priorWeekLow', Close: 'priorWeekClose' };
       const key = map[v.level] || 'priorWeekAvgClose';
       const level = Number(row[key]);
+      if (!Number.isFinite(level)) return false;
       if (v.operator === 'within_pct') return Math.abs(Number(row.btcPrice) / level - 1) * 100 <= Number(v.tolerancePct);
       if (v.operator === 'crosses_up') return !!previousRow && Number(previousRow.btcPrice) <= Number(previousRow[key]) && Number(row.btcPrice) > level;
       if (v.operator === 'crosses_down') return !!previousRow && Number(previousRow.btcPrice) >= Number(previousRow[key]) && Number(row.btcPrice) < level;
       return compare(Number(row.btcPrice), v.operator, level);
     }
-    case 'return_momentum':
-      return compare(Number(row.btcReturnPct), v.operator, Number(v.returnPct));
+    case 'return_momentum': {
+      const lag = lookbackGlobalRow(context, Number(v.lookbackMinutes || 0) * 60_000);
+      const current = selectedSpot(row, context.dataSettings.btcSource);
+      const previous = selectedSpot(lag, context.dataSettings.btcSource);
+      if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return false;
+      return compare((current / previous - 1) * 100, v.operator, Number(v.returnPct));
+    }
     case 'realized_vol':
       return compare(Number(row.realizedVolPct), v.operator, Number(v.annualizedPct));
     case 'round_level': {
-      const round = nearestRound(Number(row.btcPrice), v.rounding);
-      return Math.abs(Number(row.btcPrice) - round) <= Number(v.distance);
+      const price = Number(row.btcPrice);
+      if (!Number.isFinite(price)) return false;
+      const round = nearestRound(price, v.rounding);
+      return Math.abs(price - round) <= Number(v.distance);
     }
-    case 'btc_move_gate':
-      return compare(Math.abs(Number(row.btcMoveDollars || 0)), v.operator, Number(v.dollars));
+    case 'btc_move_gate': {
+      const lag = lookbackGlobalRow(context, Number(v.lookbackSeconds || 0) * 1000);
+      const current = selectedSpot(row, context.dataSettings.btcSource);
+      const previous = selectedSpot(lag, context.dataSettings.btcSource);
+      if (!Number.isFinite(current) || !Number.isFinite(previous)) return false;
+      return compare(Math.abs(current - previous), v.operator, Number(v.dollars));
+    }
     case 'reference_distance': {
-      const ref = referencePrice(row, v.reference, context.execution);
-      return compare(ref - Number(row.strike), v.operator, Number(v.dollars));
+      const ref = referencePrice(row, v.reference, context.execution, context.dataSettings);
+      return Number.isFinite(ref) && compare(ref - Number(row.strike), v.operator, Number(v.dollars));
     }
     case 'reference_vs_spot': {
-      const ref = referencePrice(row, v.reference, context.execution);
+      const ref = referencePrice(row, v.reference, context.execution, context.dataSettings);
       const spot = selectedSpot(row, context.dataSettings.btcSource);
-      return compare(ref - spot, v.operator, Number(v.dollars));
+      return Number.isFinite(ref) && Number.isFinite(spot) && compare(ref - spot, v.operator, Number(v.dollars));
     }
     default:
       return true;
@@ -335,12 +460,18 @@ function advancedMetrics(trades, equity, cagr) {
   };
 }
 
+function executableSellPrice(row, position, fillMode, risk) {
+  const raw = contractPrice(row, position.venue, position.side, fillMode, 'sell');
+  if (!Number.isFinite(raw)) return Number.NaN;
+  const friction = (Number(risk.slippageCents || 0) + Number(risk.exitFeeCents || 0)) / 100;
+  return clamp(raw - friction, 0.001, 0.999);
+}
+
 function shouldExitPosition(position, row, execution, fillMode, risk) {
   if (row.contractId !== position.contractId) return null;
   if (execution.exitMode === 'expiry') return null;
-  const raw = contractPrice(row, position.venue, position.side, fillMode, 'sell');
-  const friction = (Number(risk.slippageCents || 0) + Number(risk.exitFeeCents || 0)) / 100;
-  const executable = clamp(raw - friction, 0.001, 0.999);
+  const executable = executableSellPrice(row, position, fillMode, risk);
+  if (!Number.isFinite(executable)) return null;
   if (execution.exitMode === 'target' && executable >= Number(execution.exitTarget)) return { reason: 'target', price: executable };
   if (execution.exitMode === 'target_stop') {
     if (executable >= Number(execution.exitTarget)) return { reason: 'target', price: executable };
@@ -351,13 +482,17 @@ function shouldExitPosition(position, row, execution, fillMode, risk) {
 }
 
 export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, dataSettings, fillMode = 'ask' }) {
-  const sortedRows = [...rows].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const sortedRows = [...rows]
+    .filter((row) => Number.isFinite(Date.parse(row.timestamp)) && row.contractId)
+    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   const startingCapital = Number(risk.startingCapital || 10000);
   const trades = [];
   const equity = [{ timestamp: sortedRows[0]?.timestamp || new Date().toISOString(), equity: startingCapital }];
   const pastOutcomes = [];
   const entryCounts = new Map();
   const openPositions = [];
+  const previousByContract = new Map();
+  const historyByContract = new Map();
   let cash = startingCapital;
   let lastEntryTime = -Infinity;
 
@@ -387,19 +522,34 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     const ts = new Date(row.timestamp).getTime();
     settleThrough(ts);
     const previousRow = index > 0 ? sortedRows[index - 1] : null;
+    const previousContractRow = previousByContract.get(row.contractId) || null;
+    const contractHistory = historyByContract.get(row.contractId) || [];
 
     // Update marks and evaluate configured early exits before considering a new entry.
     [...openPositions].forEach((position) => {
       if (row.contractId !== position.contractId) return;
-      position.lastMark = contractPrice(row, position.venue, position.side, fillMode, 'sell');
+      const executableMark = executableSellPrice(row, position, fillMode, risk);
+      if (Number.isFinite(executableMark)) position.lastMark = executableMark;
       const exit = shouldExitPosition(position, row, execution, fillMode, risk);
       if (exit) finalize(position, ts, exit.price, exit.reason);
     });
     equity.push({ timestamp: row.timestamp, equity: accountEquity() });
 
-    const context = { execution, dataSettings, fillMode };
+    const context = {
+      execution,
+      dataSettings,
+      fillMode,
+      previousContractRow,
+      contractHistory,
+      historyRows: sortedRows,
+      rowIndex: index,
+      currentRow: row,
+    };
     const matches = factors.map((factor) => factorMatches(factor, row, previousRow, context));
     const signal = joinMode === 'OR' ? matches.some(Boolean) : matches.every(Boolean);
+    previousByContract.set(row.contractId, row);
+    contractHistory.push(row);
+    historyByContract.set(row.contractId, contractHistory);
     if (!signal || factors.length === 0) return;
     if (row.marketHorizon !== execution.marketHorizon) return;
 
@@ -410,6 +560,10 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     if (ts - lastEntryTime < cooldownMs) return;
 
     const rawEntry = contractPrice(row, execution.tradeVenue, execution.tradeSide, fillMode, 'buy');
+    if (!Number.isFinite(rawEntry)) return;
+    const outcomeYes = venueOutcomeYes(row, execution.tradeVenue);
+    if (outcomeYes === null) return;
+
     const entryFriction = (Number(risk.slippageCents || 0) + Number(risk.entryFeeCents || 0)) / 100;
     const entryPrice = clamp(rawEntry + entryFriction, 0.001, 0.999);
     let sizingFraction = getSizingFraction({ risk, entryPrice, pastOutcomes, execution });
@@ -421,17 +575,27 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
     const exposureCapacity = Math.max(0, maxExposureDollars - openCost());
     const desiredAllocation = equityBefore * sizingFraction;
     const allocation = Math.min(desiredAllocation, exposureCapacity, cash);
-    if (allocation <= 0) return;
+    if (!(allocation > 0)) return;
 
     const shares = allocation / entryPrice;
-    const settlementWon = execution.tradeSide === 'YES' ? !!row.outcomeYes : !row.outcomeYes;
-    const expiryTs = Number(row.expiryTs || (ts + Math.max(1, Number(row.secondsRemaining || 1)) * 1000));
-    const modelProbability = digitalProbability({
-      spot: selectedSpot(row, dataSettings.btcSource),
+    const settlementWon = execution.tradeSide === 'YES' ? outcomeYes : !outcomeYes;
+    const fallbackExpiry = ts + Math.max(1, Number(row.secondsRemaining || 1)) * 1000;
+    const expiryTs = parseTimestampMs(row.expiryTs ?? row.expiry, fallbackExpiry);
+    if (!Number.isFinite(expiryTs) || expiryTs < ts) return;
+    const spot = selectedSpot(row, dataSettings.btcSource);
+    const yesModelProbability = digitalProbability({
+      spot,
       strike: Number(row.strike),
       timeYears: Math.max(Number(row.secondsRemaining), 1) / (365.25 * 24 * 3600),
       volatility: Math.max(Number(row.realizedVolPct || 1), 1) / 100,
     });
+    const modelProbability = execution.tradeSide === 'YES' ? yesModelProbability : 1 - yesModelProbability;
+
+    const initialSell = contractPrice(row, execution.tradeVenue, execution.tradeSide, fillMode, 'sell');
+    const exitFriction = (Number(risk.slippageCents || 0) + Number(risk.exitFeeCents || 0)) / 100;
+    const initialMark = Number.isFinite(initialSell)
+      ? clamp(initialSell - exitFriction, 0.001, 0.999)
+      : clamp(rawEntry, 0.001, 0.999);
 
     cash -= allocation;
     openPositions.push({
@@ -446,10 +610,10 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
       shares,
       settlementWon,
       before: equityBefore,
-      btcPrice: selectedSpot(row, dataSettings.btcSource),
-      referencePrice: referencePrice(row, 'Auto by trade venue', execution),
+      btcPrice: spot,
+      referencePrice: referencePrice(row, 'Auto by trade venue', execution, dataSettings),
       modelProbability,
-      lastMark: rawEntry,
+      lastMark: initialMark,
     });
     entryCounts.set(row.contractId, count + 1);
     lastEntryTime = ts;
@@ -505,8 +669,17 @@ export function runBacktest({ rows, factors, joinMode = 'AND', risk, execution, 
 
 export function runParameterSweep({ rows, factors, joinMode, risk, execution, dataSettings, factorInstanceId, fieldKey, start, end, step, fillMode = 'ask' }) {
   const points = [];
-  const safeStep = Math.abs(Number(step)) || 1;
-  for (let value = Number(start); value <= Number(end) + safeStep / 1000; value += safeStep) {
+  const startValue = Number(start);
+  const endValue = Number(end);
+  if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) return points;
+  const magnitude = Math.abs(Number(step)) || 1;
+  const direction = endValue >= startValue ? 1 : -1;
+  const increment = magnitude * direction;
+  const withinRange = (value) => direction > 0
+    ? value <= endValue + magnitude / 1000
+    : value >= endValue - magnitude / 1000;
+
+  for (let value = startValue; withinRange(value); value += increment) {
     const adjusted = factors.map((factor) => factor.instanceId === factorInstanceId
       ? { ...factor, values: { ...factor.values, [fieldKey]: Number(value.toFixed(8)) } }
       : factor);
@@ -519,9 +692,13 @@ export function runParameterSweep({ rows, factors, joinMode, risk, execution, da
 
 export function equityDifference(left, right, startingCapital = 10000) {
   const byTime = new Map();
-  left.forEach((point) => byTime.set(point.timestamp, { timestamp: point.timestamp, left: point.equity, right: startingCapital }));
+  left.forEach((point) => {
+    const current = byTime.get(point.timestamp) || { timestamp: point.timestamp };
+    current.left = point.equity;
+    byTime.set(point.timestamp, current);
+  });
   right.forEach((point) => {
-    const current = byTime.get(point.timestamp) || { timestamp: point.timestamp, left: startingCapital, right: point.equity };
+    const current = byTime.get(point.timestamp) || { timestamp: point.timestamp };
     current.right = point.equity;
     byTime.set(point.timestamp, current);
   });
@@ -529,9 +706,7 @@ export function equityDifference(left, right, startingCapital = 10000) {
   let lastRight = startingCapital;
   return [...byTime.values()].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map((point) => {
     if (Number.isFinite(point.left)) lastLeft = point.left;
-    else point.left = lastLeft;
     if (Number.isFinite(point.right)) lastRight = point.right;
-    else point.right = lastRight;
-    return { timestamp: point.timestamp, equity: point.left - point.right };
+    return { timestamp: point.timestamp, equity: lastLeft - lastRight };
   });
 }

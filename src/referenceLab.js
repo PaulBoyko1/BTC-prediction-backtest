@@ -2,7 +2,10 @@ import { generateDemoDataset } from './mockData.js';
 import { referenceSourceNotes } from './dataAdapters.js';
 
 const root = document.querySelector('#reference-app');
-const data = generateDemoDataset(3, 42);
+const demoData = generateDemoDataset(3, 42);
+// Exact rows must come from a verified ingestion/normalization path. Never point
+// this at demoData merely because an API adapter exists.
+const exactData = [];
 const state = {
   mode: 'exact',
   years: 1,
@@ -13,13 +16,18 @@ const state = {
 
 const fmt = (value, digits = 2) => Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: digits });
 
-function latestTs() {
-  return new Date(data[data.length - 1].timestamp).getTime();
+function activeData() {
+  return state.mode === 'demo' ? demoData : exactData;
+}
+
+function latestTs(rows) {
+  return rows.length ? Math.max(...rows.map((row) => new Date(row.timestamp).getTime()).filter(Number.isFinite)) : Date.now();
 }
 
 function selectedRows() {
-  const cutoff = latestTs() - Number(state.years) * 365.25 * 86400000;
-  return data.filter((row) => row.marketHorizon === state.horizon && new Date(row.timestamp).getTime() >= cutoff);
+  const source = activeData();
+  const cutoff = latestTs(source) - Number(state.years) * 365.25 * 86400000;
+  return source.filter((row) => row.marketHorizon === state.horizon && new Date(row.timestamp).getTime() >= cutoff);
 }
 
 function spot(row) {
@@ -34,18 +42,20 @@ function renderAvailability(venue) {
     <div class="eyebrow">${venue.toUpperCase()}</div>
     <h3>${info.name}</h3>
     <p>${info.model}</p>
-    <span class="blocked">${info.directFreeTickAdapter ? 'EXACT HISTORICAL SOURCE CONNECTED' : 'EXACT HISTORICAL TICK SOURCE NOT YET CONNECTED'}</span>
+    <span class="blocked">${info.directFreeTickAdapter ? 'REFERENCE ADAPTER AVAILABLE · EXACT ROWS STILL REQUIRE INGESTION' : 'EXACT HISTORICAL TICK SOURCE NOT YET CONNECTED'}</span>
     <small>${info.note}</small>
   </section>`;
 }
 
+function availabilityCards() {
+  if (state.venue === 'Kalshi') return renderAvailability('Kalshi');
+  if (state.venue === 'Polymarket') return renderAvailability('Polymarket');
+  return `${renderAvailability('Kalshi')}${renderAvailability('Polymarket')}`;
+}
+
 function render() {
-  const exactAvailable = state.venue === 'Kalshi'
-    ? referenceSourceNotes.Kalshi.directFreeTickAdapter
-    : state.venue === 'Polymarket'
-      ? referenceSourceNotes.Polymarket.directFreeTickAdapter
-      : referenceSourceNotes.Kalshi.directFreeTickAdapter && referenceSourceNotes.Polymarket.directFreeTickAdapter;
-  const canChart = state.mode === 'demo' || exactAvailable;
+  const rows = selectedRows();
+  const canChart = rows.length > 0;
   root.innerHTML = `
     <div class="reference-nav">
       <a href="./index.html">← Strategy workbench</a>
@@ -65,54 +75,56 @@ function render() {
         <label><span>BTC comparison</span><select id="ref-btc"><option ${state.btcSource === 'Composite' ? 'selected' : ''}>Composite</option><option ${state.btcSource === 'Binance' ? 'selected' : ''}>Binance</option><option ${state.btcSource === 'Coinbase' ? 'selected' : ''}>Coinbase</option></select></label>
       </div>
     </section>
-    <div class="availability-grid">
-      ${renderAvailability('Kalshi')}
-      ${renderAvailability('Polymarket')}
-    </div>
+    <div class="availability-grid">${availabilityCards()}</div>
     ${state.mode === 'demo' ? '<div class="reference-warning"><strong>Synthetic mechanics only.</strong> These reference series are generated demo fields used to test chart/strategy plumbing. They are not BRTI or Chainlink historical observations and must not be used to claim an edge.</div>' : ''}
-    ${canChart ? renderCharts() : renderWithheld()}
+    ${canChart ? renderCharts(rows) : renderWithheld()}
   `;
   bind();
-  if (canChart) requestAnimationFrame(drawAll);
+  if (canChart) requestAnimationFrame(() => drawAll(rows));
 }
 
 function renderWithheld() {
   return `<section class="withheld">
-    <strong>Exact historical reference chart withheld</strong>
-    <p>The selected exact settlement-reference source is not connected to a verified historical tick archive yet. The app intentionally refuses to substitute Binance/Coinbase spot and call it BRTI or Chainlink. Switch to “Synthetic mechanics demo” only if you want to inspect how the analysis page will behave.</p>
+    <strong>${state.mode === 'exact' ? 'Exact historical reference chart withheld' : 'No demo rows for this selection'}</strong>
+    <p>${state.mode === 'exact'
+      ? 'No verified exact-reference rows have been loaded into this page. An API/client adapter alone is not enough: the app intentionally refuses to substitute synthetic or Binance/Coinbase spot data and call it BRTI or Chainlink. Switch to “Synthetic mechanics demo” only to inspect the page mechanics.'
+      : 'The selected synthetic horizon/window has no observations.'}</p>
   </section>`;
 }
 
-function renderCharts() {
-  const rows = selectedRows();
-  const kDiffs = rows.map((row) => Number(row.kalshiReferencePrice) - spot(row));
-  const pDiffs = rows.map((row) => Number(row.polyReferencePrice) - spot(row));
+function renderCharts(rows) {
+  const showKalshi = state.venue !== 'Polymarket';
+  const showPoly = state.venue !== 'Kalshi';
+  const kDiffs = showKalshi ? rows.map((row) => Number(row.kalshiReferencePrice) - spot(row)) : [];
+  const pDiffs = showPoly ? rows.map((row) => Number(row.polyReferencePrice) - spot(row)) : [];
   const kAbs = kDiffs.length ? kDiffs.reduce((s, x) => s + Math.abs(x), 0) / kDiffs.length : 0;
   const pAbs = pDiffs.length ? pDiffs.reduce((s, x) => s + Math.abs(x), 0) / pDiffs.length : 0;
   return `
     <div class="metric-grid four">
       <div class="metric"><span>Rows</span><strong>${rows.length.toLocaleString()}</strong><small>${state.horizon} · ${state.years}y</small></div>
-      <div class="metric"><span>Kalshi mean |ref − spot|</span><strong>$${fmt(kAbs, 2)}</strong><small>demo/reference series</small></div>
-      <div class="metric"><span>Poly mean |ref − spot|</span><strong>$${fmt(pAbs, 2)}</strong><small>demo/reference series</small></div>
+      ${showKalshi ? `<div class="metric"><span>Kalshi mean |ref − spot|</span><strong>$${fmt(kAbs, 2)}</strong><small>${state.mode === 'demo' ? 'synthetic reference series' : 'exact reference rows'}</small></div>` : ''}
+      ${showPoly ? `<div class="metric"><span>Poly mean |ref − spot|</span><strong>$${fmt(pAbs, 2)}</strong><small>${state.mode === 'demo' ? 'synthetic reference series' : 'exact reference rows'}</small></div>` : ''}
       <div class="metric"><span>BTC comparison</span><strong>${state.btcSource}</strong><small>kept separate from settlement source</small></div>
     </div>
     <div class="reference-chart-grid">
-      <section class="reference-chart-card"><strong>Kalshi reference − BTC</strong><span>Positive means reference above selected BTC source</span><canvas id="kalshi-ref-diff" height="230"></canvas></section>
-      <section class="reference-chart-card"><strong>Polymarket reference − BTC</strong><span>Positive means reference above selected BTC source</span><canvas id="poly-ref-diff" height="230"></canvas></section>
-      <section class="reference-chart-card"><strong>Kalshi reference − Polymarket reference</strong><span>Reference-source divergence</span><canvas id="reference-cross-diff" height="230"></canvas></section>
+      ${showKalshi ? '<section class="reference-chart-card"><strong>Kalshi reference − BTC</strong><span>Positive means reference above selected BTC source</span><canvas id="kalshi-ref-diff" height="230"></canvas></section>' : ''}
+      ${showPoly ? '<section class="reference-chart-card"><strong>Polymarket reference − BTC</strong><span>Positive means reference above selected BTC source</span><canvas id="poly-ref-diff" height="230"></canvas></section>' : ''}
+      ${showKalshi && showPoly ? '<section class="reference-chart-card"><strong>Kalshi reference − Polymarket reference</strong><span>Reference-source divergence</span><canvas id="reference-cross-diff" height="230"></canvas></section>' : ''}
     </div>
     <section class="summary-card reference-table">
       <div class="card-head"><div><strong>Reference geometry sample</strong><span>Last 20 normalized observations</span></div></div>
-      <div class="table-wrap"><table><thead><tr><th>Time</th><th>BTC</th><th>Strike</th><th>Kalshi ref</th><th>Poly ref</th><th>K − BTC</th><th>P − BTC</th></tr></thead><tbody>${rows.slice(-20).reverse().map((row) => `<tr><td>${new Date(row.timestamp).toLocaleString()}</td><td>$${fmt(spot(row), 0)}</td><td>$${fmt(row.strike, 0)}</td><td>$${fmt(row.kalshiReferencePrice, 0)}</td><td>$${fmt(row.polyReferencePrice, 0)}</td><td>$${fmt(Number(row.kalshiReferencePrice) - spot(row), 2)}</td><td>$${fmt(Number(row.polyReferencePrice) - spot(row), 2)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>BTC</th><th>Strike</th>${showKalshi ? '<th>Kalshi ref</th><th>K − BTC</th>' : ''}${showPoly ? '<th>Poly ref</th><th>P − BTC</th>' : ''}</tr></thead><tbody>${rows.slice(-20).reverse().map((row) => `<tr><td>${new Date(row.timestamp).toLocaleString()}</td><td>$${fmt(spot(row), 0)}</td><td>$${fmt(row.strike, 0)}</td>${showKalshi ? `<td>$${fmt(row.kalshiReferencePrice, 0)}</td><td>$${fmt(Number(row.kalshiReferencePrice) - spot(row), 2)}</td>` : ''}${showPoly ? `<td>$${fmt(row.polyReferencePrice, 0)}</td><td>$${fmt(Number(row.polyReferencePrice) - spot(row), 2)}</td>` : ''}</tr>`).join('')}</tbody></table></div>
     </section>
   `;
 }
 
 function draw(canvas, values, stroke) {
   if (!canvas || !values.length) return;
+  const finiteValues = values.filter(Number.isFinite);
+  if (!finiteValues.length) return;
   const maxPoints = 800;
-  const step = Math.max(1, Math.ceil(values.length / maxPoints));
-  const points = values.filter((_, i) => i % step === 0 || i === values.length - 1);
+  const step = Math.max(1, Math.ceil(finiteValues.length / maxPoints));
+  const points = finiteValues.filter((_, i) => i % step === 0 || i === finiteValues.length - 1);
   const ctx = canvas.getContext('2d');
   const width = canvas.clientWidth || 360;
   const height = canvas.clientHeight || 230;
@@ -141,11 +153,16 @@ function draw(canvas, values, stroke) {
   ctx.fillText(`$${fmt(min, 2)}`, 3, height - 5);
 }
 
-function drawAll() {
-  const rows = selectedRows();
-  draw(document.querySelector('#kalshi-ref-diff'), rows.map((row) => Number(row.kalshiReferencePrice) - spot(row)), '#71e3ad');
-  draw(document.querySelector('#poly-ref-diff'), rows.map((row) => Number(row.polyReferencePrice) - spot(row)), '#7da8ff');
-  draw(document.querySelector('#reference-cross-diff'), rows.map((row) => Number(row.kalshiReferencePrice) - Number(row.polyReferencePrice)), '#f2bf6d');
+function drawAll(rows) {
+  if (state.venue !== 'Polymarket') {
+    draw(document.querySelector('#kalshi-ref-diff'), rows.map((row) => Number(row.kalshiReferencePrice) - spot(row)), '#71e3ad');
+  }
+  if (state.venue !== 'Kalshi') {
+    draw(document.querySelector('#poly-ref-diff'), rows.map((row) => Number(row.polyReferencePrice) - spot(row)), '#7da8ff');
+  }
+  if (state.venue === 'Both') {
+    draw(document.querySelector('#reference-cross-diff'), rows.map((row) => Number(row.kalshiReferencePrice) - Number(row.polyReferencePrice)), '#f2bf6d');
+  }
 }
 
 function bind() {

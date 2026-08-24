@@ -77,6 +77,15 @@ export const kalshiApi = {
   async historicalCutoff() {
     return fetchJson(`${ENDPOINTS.kalshi}/historical/cutoff`);
   },
+  async historicalMarkets({ limit = 1000, cursor } = {}) {
+    return fetchJson(`${ENDPOINTS.kalshi}/historical/markets${qs({ limit, cursor })}`);
+  },
+  async historicalMarket(ticker) {
+    return fetchJson(`${ENDPOINTS.kalshi}/historical/markets/${encodeURIComponent(ticker)}`);
+  },
+  async historicalTrades({ ticker, minTs, maxTs, limit = 1000, cursor } = {}) {
+    return fetchJson(`${ENDPOINTS.kalshi}/historical/trades${qs({ ticker, min_ts: minTs, max_ts: maxTs, limit, cursor })}`);
+  },
 };
 
 export const polymarketApi = {
@@ -146,15 +155,15 @@ export function websocketEndpoints() {
 export const referenceSourceNotes = {
   Kalshi: {
     name: 'CF Benchmarks BRTI',
-    model: 'Simple average of 60 one-second RTI observations during the final minute for current BTC 15m contracts.',
+    model: 'Current BTC 15m contracts use the BRTI mechanism described by the individual market rules; retain the rule version with each contract.',
     directFreeTickAdapter: false,
-    note: 'Market metadata/rules are public. Historical BRTI tick licensing/availability must be verified separately before claiming an exact reference-price backtest.',
+    note: 'Kalshi market/trade/result metadata are public. Exact pre-expiry BRTI history requires the appropriate CME/CF Benchmarks entitlement; resolved outcomes can still be exact without the full intracontract reference path.',
   },
   Polymarket: {
     name: 'Chainlink BTC/USD Data Streams',
-    model: 'Use the exact market rule and resolution source. Current BTC Up/Down pages identify Chainlink BTC/USD Data Streams and warn against substituting ordinary spot.',
+    model: 'Use each contract’s exact resolutionSource/rule version. BTC Up/Down contracts have used different TWAP windows, so the window must never be inferred only from horizon.',
     directFreeTickAdapter: false,
-    note: 'The app keeps this separate from Binance/Coinbase. Exact historical stream retrieval should be connected only through an authorized/archive source that matches the contract rule.',
+    note: 'Exact recent reports can be queried with authorized Chainlink access. Older research may use a clearly labeled reconstructed Binance/Coinbase TWAP proxy, but it must never be labeled as exact Chainlink data.',
   },
 };
 
