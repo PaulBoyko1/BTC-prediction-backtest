@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/app.js && node --check src/backtest.js && node --check src/catalog.js && node --check src/mockData.js && node --check src/dataAdapters.js",
-    "test": "node tests/smoke.mjs"
+    "check": "node --check src/app.js && node --check src/backtest.js && node --check src/catalog.js && node --check src/mockData.js && node --check src/dataAdapters.js && node --check scripts/ingest.mjs && node --check tests/smoke.mjs",
+    "test": "node tests/smoke.mjs",
+    "ingest": "node scripts/ingest.mjs"
   }
 }
