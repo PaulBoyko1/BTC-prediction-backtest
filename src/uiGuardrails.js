@@ -7,16 +7,19 @@ function labelFor(control) {
 }
 
 function appendNote(container, key, text) {
-  if (!container || container.querySelector(`[data-guardrail-note="${key}"]`)) return;
-  const note = document.createElement('small');
-  note.dataset.guardrailNote = key;
+  if (!container) return;
+  let note = container.querySelector(`[data-guardrail-note="${key}"]`);
+  if (!note) {
+    note = document.createElement('small');
+    note.dataset.guardrailNote = key;
+    note.style.display = 'block';
+    note.style.marginTop = '5px';
+    note.style.color = 'var(--muted)';
+    note.style.fontSize = '8px';
+    note.style.lineHeight = '1.45';
+    container.appendChild(note);
+  }
   note.textContent = text;
-  note.style.display = 'block';
-  note.style.marginTop = '5px';
-  note.style.color = 'var(--muted)';
-  note.style.fontSize = '8px';
-  note.style.lineHeight = '1.45';
-  container.appendChild(note);
 }
 
 function applyVersion() {
