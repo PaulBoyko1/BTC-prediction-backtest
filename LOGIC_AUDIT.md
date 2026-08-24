@@ -15,6 +15,9 @@ This audit cross-checks the implemented system against the project ideas and res
 - Entry cost is not artificially capped below `$1.00`. If explicit friction makes a binary unit cost exceed its maximum payout, a winning settlement can correctly produce a loss.
 - Fixed-percentage sizing does not pretend to use `minEdgePct`; the browser labels that field as a Kelly-only posterior-edge gate.
 - Binary Kelly remains restricted to hold-to-expiry studies. Arbitrary target/stop/time exits use fixed sizing instead.
+- A defined low-price/high-price mean-reversion cycle is regression-tested using executable ask entry and executable bid target exit.
+- Repeat volatility-harvesting is regression-tested across multiple low→high cycles inside the same contract.
+- Completed early-exit P/L is independent of final settlement direction: a target exit can be profitable even when that contract later settles against the originally purchased side.
 
 ### YES / NO consistency
 
@@ -69,12 +72,14 @@ v0.5 adds `backend/twap_proxy.py`, which computes a **reconstructed, piecewise-c
 
 - requires a price observation at or before the requested window start;
 - can reject an overly stale carried-forward starting price;
+- measures the largest observation gap inside each requested window;
+- can fail closed when an in-window observation gap exceeds a configured quality threshold;
 - records window completeness and provenance;
 - always emits `is_exact_source = false`;
 - is intended for Binance, Coinbase, or an explicitly constructed composite proxy;
 - must never be labeled exact Chainlink Data Streams.
 
-This closes the mechanical "we can calculate a TWAP" gap while preserving oracle-source honesty.
+This closes the mechanical "we can calculate a TWAP" gap while preserving oracle-source honesty and exposing acquisition-quality gaps rather than silently carrying a stale price through missing data.
 
 ## Contract geometry
 
@@ -120,7 +125,10 @@ JavaScript adversarial tests now cover:
 - immediate spread drawdown;
 - fee/cost separation from probability calibration;
 - combined-row settlement-outcome isolation;
-- all-in unit cost above `$1.00`.
+- all-in unit cost above `$1.00`;
+- 45¢→55¢ style mean-reversion target execution;
+- repeated low→high volatility-harvesting cycles in one contract;
+- profitable early exit despite losing eventual settlement.
 
 Python tests now additionally cover:
 
@@ -130,10 +138,11 @@ Python tests now additionally cover:
 - irregular-tick time-weighted TWAP math;
 - incomplete TWAP window rejection;
 - starting-price staleness rejection;
+- excessive in-window observation-gap rejection;
 - explicit non-exact proxy provenance.
 
 ## Audit conclusion
 
-The core execution, source selection, timing, settlement-outcome, fill-sensitivity and Test-B mechanics are now internally consistent with the stated research design. Where the browser cannot yet honor an advanced parameter from raw data, it is explicitly guarded rather than silently pretending the setting is active.
+The core execution, source selection, timing, settlement-outcome, fill-sensitivity, defined-price cycle, repeat-harvesting and Test-B mechanics are now internally consistent with the stated research design. Where the browser cannot yet honor an advanced parameter from raw data, it is explicitly guarded rather than silently pretending the setting is active.
 
 This still does **not** establish a trading edge. Real normalized history, rule-versioned settlement data, historical costs, de-correlated event statistics, parameter-stability checks and walk-forward/OOS validation remain necessary before any strategy conclusion is credible.
